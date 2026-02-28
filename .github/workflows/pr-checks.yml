@@ -1,4 +1,4 @@
-name: DemoPipeline
+name: PullRequest_Pipeline
 
 on:
   pull_request:
