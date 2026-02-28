@@ -2,7 +2,7 @@ name: DemoPipeline
 
 on:
   pull_request:
-    branches: ["meghanabhaskar93-patch-1"]
+    branches: ["main"]
     types: [opened, reopened, synchronize, ready_for_review]
 
 concurrency:
