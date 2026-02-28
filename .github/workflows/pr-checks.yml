@@ -36,4 +36,4 @@ jobs:
       - name: Run tests
         shell: pwsh
         run: |
-          uv run pytest -q
+          uv run pytest -u
