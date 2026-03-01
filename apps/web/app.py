@@ -61,7 +61,8 @@ st.markdown(
 
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
-    header {visibility: hidden;}
+    /* Keep Streamlit header visible so the collapsed-sidebar toggle remains accessible. */
+    header {visibility: visible;}
 
     .main .block-container {
         padding: 2rem 3rem;
