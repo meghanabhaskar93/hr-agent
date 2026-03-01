@@ -225,6 +225,8 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 
 ### Using uv
 
+Install UV
+
 ```bash
 # Install dependencies
 uv sync
