@@ -225,7 +225,29 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 
 ### Using uv
 
-Install UV
+Install `uv` (if needed)
+
+If `uv` is not installed, use one of the following:
+
+```bash
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Then verify:
+
+```bash
+uv --version
+```
+
+Common issue: if `uv` is still not found, restart your terminal so your `PATH` is refreshed.
+
+Use `uv` in this project:
 
 ```bash
 # Install dependencies
@@ -239,6 +261,31 @@ uv run streamlit run apps/web/app.py
 uv run pytest
 uv run ruff check .
 ```
+
+### Pipeline status check (git)
+
+Check whether the latest CI pipeline test run passed for your current branch:
+
+```bash
+bash scripts/check_pipeline_status.sh
+```
+
+Check a specific branch:
+
+```bash
+bash scripts/check_pipeline_status.sh test-branch
+```
+
+Optional git alias:
+
+```bash
+git config alias.pipeline-check '!bash scripts/check_pipeline_status.sh'
+git pipeline-check
+```
+
+Requirements:
+- GitHub CLI (`gh`) installed and authenticated (`gh auth login`)
+- Existing workflow run from `.github/workflows/pr-checks.yml` for the target branch
 
 ---
 
