@@ -262,6 +262,31 @@ uv run pytest
 uv run ruff check .
 ```
 
+### Pipeline status check (git)
+
+Check whether the latest CI pipeline test run passed for your current branch:
+
+```bash
+bash scripts/check_pipeline_status.sh
+```
+
+Check a specific branch:
+
+```bash
+bash scripts/check_pipeline_status.sh test-branch
+```
+
+Optional git alias:
+
+```bash
+git config alias.pipeline-check '!bash scripts/check_pipeline_status.sh'
+git pipeline-check
+```
+
+Requirements:
+- GitHub CLI (`gh`) installed and authenticated (`gh auth login`)
+- Existing workflow run from `.github/workflows/pr-checks.yml` for the target branch
+
 ---
 
 ## 📚 Documentation
