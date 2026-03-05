@@ -8,6 +8,7 @@ from .models import (
     # Enums
     UserRole,
     HolidayRequestStatus,
+    EscalationStatus,
     PolicyEffect,
     # Domain Models
     Employee,
@@ -36,6 +37,7 @@ __all__ = [
     # Enums
     "UserRole",
     "HolidayRequestStatus",
+    "EscalationStatus",
     "PolicyEffect",
     # Domain Models
     "Employee",

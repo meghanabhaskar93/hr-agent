@@ -96,6 +96,25 @@ def seed_if_needed() -> None:
         con.execute(
             text(
                 """
+        CREATE TABLE IF NOT EXISTS hr_escalation_request (
+          escalation_id INTEGER PRIMARY KEY,
+          requester_employee_id INTEGER NOT NULL,
+          requester_email TEXT NOT NULL,
+          thread_id TEXT NOT NULL,
+          source_message_excerpt TEXT NOT NULL,
+          status TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          updated_by_employee_id INTEGER NULL,
+          resolution_note TEXT NULL
+        );
+        """
+            )
+        )
+
+        con.execute(
+            text(
+                """
         CREATE TABLE IF NOT EXISTS compensation (
           employee_id INTEGER PRIMARY KEY,
           currency TEXT NOT NULL,

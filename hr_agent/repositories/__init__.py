@@ -13,12 +13,14 @@ from .employee import EmployeeRepository
 from .holiday import HolidayRepository
 from .compensation import CompensationRepository
 from .company import CompanyRepository
+from .escalation import EscalationRepository
 
 # Singleton instances
 _employee_repo: EmployeeRepository | None = None
 _holiday_repo: HolidayRepository | None = None
 _compensation_repo: CompensationRepository | None = None
 _company_repo: CompanyRepository | None = None
+_escalation_repo: EscalationRepository | None = None
 
 
 def get_employee_repo() -> EmployeeRepository:
@@ -49,14 +51,23 @@ def get_company_repo() -> CompanyRepository:
     return _company_repo
 
 
+def get_escalation_repo() -> EscalationRepository:
+    global _escalation_repo
+    if _escalation_repo is None:
+        _escalation_repo = EscalationRepository()
+    return _escalation_repo
+
+
 __all__ = [
     "BaseRepository",
     "EmployeeRepository",
     "HolidayRepository",
     "CompensationRepository",
     "CompanyRepository",
+    "EscalationRepository",
     "get_employee_repo",
     "get_holiday_repo",
     "get_compensation_repo",
     "get_company_repo",
+    "get_escalation_repo",
 ]
