@@ -9,6 +9,9 @@ class Settings(BaseSettings):
         default="alex.kim@acme.com", validation_alias="DEMO_USER_EMAIL"
     )
     db_url: str = Field(default="sqlite:///./hr_demo.db", validation_alias="DB_URL")
+    allowed_test_user_emails: str = Field(
+        default="", validation_alias="ALLOWED_TEST_USER_EMAILS"
+    )
 
     llm_provider: str = Field(
         default="openai_compatible", validation_alias="LLM_PROVIDER"

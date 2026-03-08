@@ -17,6 +17,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 import uvicorn
 import uuid
+from functools import lru_cache
 
 from hr_agent.agent.langgraph_agent import HRAgentLangGraph, run_hr_agent
 from hr_agent.seed import seed_if_needed
@@ -301,6 +302,19 @@ def get_requester_context(user_email: str) -> dict:
     }
 
 
+@lru_cache(maxsize=1)
+def get_allowed_test_user_emails() -> set[str]:
+    """Parse ALLOWED_TEST_USER_EMAILS into a normalized set."""
+    raw = settings.allowed_test_user_emails.strip()
+    if not raw:
+        return set()
+    return {
+        email.strip().lower()
+        for email in raw.split(",")
+        if email and email.strip()
+    }
+
+
 async def get_current_user(
     request: Request, x_user_email: str = Header(..., alias="X-User-Email")
 ) -> dict:
@@ -308,18 +322,26 @@ async def get_current_user(
     Extract the current user from the request header.
     With rate limiting and audit logging.
     """
+    normalized_email = x_user_email.strip().lower()
+    allowed_test_emails = get_allowed_test_user_emails()
+    if allowed_test_emails and normalized_email not in allowed_test_emails:
+        raise HTTPException(
+            status_code=403,
+            detail="Access to this deployment is restricted. Contact the app owner.",
+        )
+
     # Rate limit check
-    allowed, _info = rate_limiter.is_allowed(x_user_email)
+    allowed, _info = rate_limiter.is_allowed(normalized_email)
     if not allowed:
         raise RateLimitError("API", retry_after=60)
 
     try:
-        context = get_requester_context(x_user_email)
+        context = get_requester_context(normalized_email)
 
         # Audit login/access
         audit_logger.log(
             action=AuditAction.LOGIN,
-            user_email=x_user_email,
+            user_email=normalized_email,
             resource_type="api",
             ip_address=request.client.host if request.client else None,
         )

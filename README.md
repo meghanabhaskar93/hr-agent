@@ -243,6 +243,9 @@ LLM_PROVIDER=openai_compatible
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 
+# Optional: restrict public test deployment to specific emails
+ALLOWED_TEST_USER_EMAILS=amanda.foster@acme.com,jordan.lee@acme.com
+
 # Optional: Langfuse Observability (free tier available)
 LANGFUSE_ENABLED=true
 LANGFUSE_PUBLIC_KEY=pk-...
@@ -326,6 +329,7 @@ Requirements:
 |----------|-------------|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Technical architecture, diagrams, design decisions |
 | [EVALUATION.md](EVALUATION.md) | Evaluation framework, metrics, test cases |
+| [docs/deployment-free-testing.md](docs/deployment-free-testing.md) | Free deploy guide (Render + tester allowlist + optional Cloudflare Access) |
 
 ---
 

@@ -11,6 +11,7 @@ import CategoryCards from "@/components/CategoryCards";
 import { useAuth } from "@/contexts/AuthContext";
 import {
   createEscalation,
+  deleteSession,
   createSession,
   fetchEscalations,
   fetchSessions,
@@ -83,6 +84,21 @@ function clearConversationTitles(userEmail: string): void {
     localStorage.removeItem(conversationTitlesStorageKey(userEmail));
   } catch {
     // Ignore storage errors and keep UI usable.
+  }
+}
+
+function removeConversationTitles(userEmail: string, conversationIds: string[]): void {
+  if (conversationIds.length === 0) return;
+  const titles = loadConversationTitles(userEmail);
+  let changed = false;
+  for (const id of conversationIds) {
+    if (id in titles) {
+      delete titles[id];
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveConversationTitles(userEmail, titles);
   }
 }
 
@@ -341,10 +357,17 @@ export default function ChatPage() {
     }
   };
 
-  const handleDeleteConversation = (id: string) => {
-    if (user?.email) {
-      removeConversationTitle(user.email, id);
+  const handleDeleteConversation = async (id: string) => {
+    if (!user?.email) return;
+
+    try {
+      await deleteSession(user.email, id);
+    } catch (error: any) {
+      toast.error(error?.message || "Failed to delete conversation");
+      return;
     }
+
+    removeConversationTitle(user.email, id);
     setConversations((prev) => prev.filter((c) => c.id !== id));
     setConversationMessages((prev) => {
       const next = { ...prev };
@@ -357,14 +380,58 @@ export default function ChatPage() {
     }
   };
 
-  const handleClearAll = () => {
-    if (user?.email) {
-      clearConversationTitles(user.email);
+  const handleClearAll = async () => {
+    if (!user?.email) return;
+    const userEmail = user.email;
+
+    const ids = conversations.map((conversation) => conversation.id);
+    if (ids.length === 0) {
+      clearConversationTitles(userEmail);
+      setConversations([]);
+      setConversationMessages({});
+      setMessages([]);
+      setActiveConversation(null);
+      return;
     }
-    setConversations([]);
-    setConversationMessages({});
-    setMessages([]);
-    setActiveConversation(null);
+
+    const results = await Promise.allSettled(ids.map((id) => deleteSession(userEmail, id)));
+    const failedIds = results
+      .map((result, idx) => (result.status === "rejected" ? ids[idx] : null))
+      .filter((id): id is string => id !== null);
+    const deletedIds = ids.filter((id) => !failedIds.includes(id));
+
+    if (failedIds.length === 0) {
+      clearConversationTitles(userEmail);
+      setConversations([]);
+      setConversationMessages({});
+      setMessages([]);
+      setActiveConversation(null);
+      toast.success("All conversations cleared");
+      return;
+    }
+
+    removeConversationTitles(userEmail, deletedIds);
+    const failedSet = new Set(failedIds);
+
+    setConversations((prev) => prev.filter((conversation) => failedSet.has(conversation.id)));
+    setConversationMessages((prev) => {
+      const next: Record<string, Message[]> = {};
+      for (const id of failedIds) {
+        if (prev[id]) {
+          next[id] = prev[id];
+        }
+      }
+      return next;
+    });
+
+    if (!activeConversation || !failedSet.has(activeConversation)) {
+      setMessages([]);
+      setActiveConversation(null);
+    }
+
+    toast.error(
+      `${failedIds.length} conversation${failedIds.length === 1 ? "" : "s"} could not be deleted`
+    );
   };
 
   const handleEscalate = async (msg: Message) => {
