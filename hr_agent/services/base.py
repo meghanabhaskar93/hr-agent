@@ -16,6 +16,7 @@ from ..repositories import (
     get_holiday_repo,
     get_compensation_repo,
     get_company_repo,
+    get_escalation_repo,
 )
 
 
@@ -299,6 +300,103 @@ class CompanyService:
 
 
 # ============================================================================
+# ESCALATION SERVICE
+# ============================================================================
+
+
+class EscalationService:
+    """Service for human-in-the-loop escalation workflow."""
+
+    ALLOWED_STATUSES = {"PENDING", "IN_REVIEW", "RESOLVED"}
+    ALLOWED_TRANSITIONS = {
+        "PENDING": {"IN_REVIEW"},
+        "IN_REVIEW": {"RESOLVED"},
+        "RESOLVED": {"IN_REVIEW"},
+    }
+    TRIAGE_ROLES = {"HR", "MANAGER"}
+
+    def __init__(self):
+        self.repo = get_escalation_repo()
+        self.employee_repo = get_employee_repo()
+
+    def create_request(
+        self,
+        requester_employee_id: int,
+        requester_email: str,
+        thread_id: str,
+        source_message_excerpt: str,
+    ) -> dict:
+        """Create a PENDING escalation request."""
+        escalation_id = self.repo.create(
+            requester_employee_id=requester_employee_id,
+            requester_email=requester_email,
+            thread_id=thread_id,
+            source_message_excerpt=source_message_excerpt,
+            status="PENDING",
+        )
+        return {"success": True, "escalation_id": escalation_id}
+
+    def list_requests(
+        self,
+        viewer_email: str,
+        status: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """List escalation requests visible to the viewer."""
+        role = self.employee_repo.get_role_by_email(viewer_email)
+        if status and status not in self.ALLOWED_STATUSES:
+            return []
+        if role in self.TRIAGE_ROLES:
+            return self.repo.list_for_requester(None, status=status, limit=limit)
+        return self.repo.list_for_requester(viewer_email, status=status, limit=limit)
+
+    def list_counts(self, viewer_email: str) -> dict:
+        """List aggregate escalation counts visible to the viewer."""
+        role = self.employee_repo.get_role_by_email(viewer_email)
+        if role in self.TRIAGE_ROLES:
+            return self.repo.list_counts_for_requester(None)
+        return self.repo.list_counts_for_requester(viewer_email)
+
+    def transition_status(
+        self,
+        viewer_email: str,
+        actor_employee_id: int,
+        escalation_id: int,
+        new_status: str,
+        resolution_note: str | None = None,
+    ) -> dict:
+        """Transition escalation status with role and state checks."""
+        role = self.employee_repo.get_role_by_email(viewer_email)
+        if role not in self.TRIAGE_ROLES:
+            return {"success": False, "error": "Only HR/Manager can triage requests."}
+
+        if new_status not in self.ALLOWED_STATUSES:
+            return {"success": False, "error": "Invalid status."}
+
+        existing = self.repo.get_by_id(escalation_id)
+        if not existing:
+            return {"success": False, "error": "Escalation request not found."}
+
+        current_status = existing["status"]
+        allowed_next = self.ALLOWED_TRANSITIONS.get(current_status, set())
+        if new_status not in allowed_next:
+            return {
+                "success": False,
+                "error": f"Invalid transition: {current_status} -> {new_status}.",
+            }
+
+        ok = self.repo.transition_status(
+            escalation_id=escalation_id,
+            status=new_status,
+            updated_by_employee_id=actor_employee_id,
+            resolution_note=resolution_note,
+        )
+        if not ok:
+            return {"success": False, "error": "Failed to update escalation request."}
+        return {"success": True}
+
+
+# ============================================================================
 # SERVICE SINGLETONS
 # ============================================================================
 
@@ -306,6 +404,7 @@ _employee_service: EmployeeService | None = None
 _holiday_service: HolidayService | None = None
 _compensation_service: CompensationService | None = None
 _company_service: CompanyService | None = None
+_escalation_service: EscalationService | None = None
 
 
 def get_employee_service() -> EmployeeService:
@@ -334,3 +433,10 @@ def get_company_service() -> CompanyService:
     if _company_service is None:
         _company_service = CompanyService()
     return _company_service
+
+
+def get_escalation_service() -> EscalationService:
+    global _escalation_service
+    if _escalation_service is None:
+        _escalation_service = EscalationService()
+    return _escalation_service

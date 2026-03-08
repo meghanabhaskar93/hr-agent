@@ -27,10 +27,12 @@ from .services import (
     get_holiday_service,
     get_compensation_service,
     get_company_service,
+    get_escalation_service,
     EmployeeService,
     HolidayService,
     CompensationService,
     CompanyService,
+    EscalationService,
 )
 from .tools.langchain_tools import get_all_tools
 
@@ -38,6 +40,7 @@ from .tools.langchain_tools import get_all_tools
 from .domain.models import (
     UserRole,
     HolidayRequestStatus,
+    EscalationStatus,
     AgentAction,
     ChatRequest,
     ChatResponse,
@@ -62,10 +65,12 @@ __all__ = [
     "get_holiday_service",
     "get_compensation_service",
     "get_company_service",
+    "get_escalation_service",
     "EmployeeService",
     "HolidayService",
     "CompensationService",
     "CompanyService",
+    "EscalationService",
     # Tools
     "get_all_tools",
     # Registry
@@ -74,6 +79,7 @@ __all__ = [
     # Models
     "UserRole",
     "HolidayRequestStatus",
+    "EscalationStatus",
     "AgentAction",
     "ChatRequest",
     "ChatResponse",

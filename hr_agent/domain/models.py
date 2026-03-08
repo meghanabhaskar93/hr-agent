@@ -35,6 +35,14 @@ class HolidayRequestStatus(str, Enum):
     CANCELLED = "CANCELLED"
 
 
+class EscalationStatus(str, Enum):
+    """Status of an HR escalation request."""
+
+    PENDING = "PENDING"
+    IN_REVIEW = "IN_REVIEW"
+    RESOLVED = "RESOLVED"
+
+
 class PolicyEffect(str, Enum):
     """Effect of a policy rule."""
 
