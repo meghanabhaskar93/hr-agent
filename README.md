@@ -33,12 +33,43 @@ uv sync
 cp .env.example .env
 # Edit .env with your LLM API key
 
-# Run the Web UI
-uv run streamlit run apps/web/app.py
-
-# Or run the API server
+# Run the API server (terminal 1)
 uv run uvicorn apps.api.server:app --reload
 ```
+
+```bash
+# Run the React + TypeScript UI (terminal 2)
+cd apps/web-ts
+npm install
+npm run dev
+```
+
+```bash
+# Optional: run the Streamlit UI instead
+uv run streamlit run apps/web/app.py
+```
+
+### Run Now (React UI + API)
+
+Use this flow if you want the current TypeScript UI with chat history improvements.
+
+1. In terminal 1, start API:
+```bash
+uv run uvicorn apps.api.server:app --reload
+```
+2. In terminal 2, start UI:
+```bash
+cd apps/web-ts
+npm run dev
+```
+3. Open `http://localhost:8080`.
+4. Ensure `VITE_API_BASE_URL=http://127.0.0.1:8000` in `apps/web-ts/.env` (or your shell env).
+
+### Chat History Titles
+
+- Conversation titles now use the first user message instead of raw `Session <id>` labels.
+- Titles are persisted per user in browser local storage.
+- API `/sessions` now also returns an optional `title` field for better fallback labels.
 
 ---
 

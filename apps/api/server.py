@@ -25,6 +25,7 @@ from hr_agent.utils.security import rate_limiter, audit_logger, AuditAction
 from hr_agent.tracing.observability import logger, metrics
 from hr_agent.utils.errors import HRAgentError, RateLimitError
 from hr_agent.repositories.employee import EmployeeRepository
+from hr_agent.services import get_escalation_service
 
 
 # ============================================================================
@@ -57,6 +58,7 @@ class SessionInfo(BaseModel):
     created_at: str
     turn_count: int
     has_pending_confirmation: bool
+    title: Optional[str] = None
 
 
 class UserContext(BaseModel):
@@ -75,6 +77,52 @@ class HealthResponse(BaseModel):
     status: str
     timestamp: str
     version: str = "2.0.0"
+
+
+class EscalationCreateRequest(BaseModel):
+    """Request body for creating an escalation."""
+
+    thread_id: str = Field(..., min_length=1, max_length=255)
+    source_message_excerpt: str = Field(..., min_length=1, max_length=2000)
+
+
+class EscalationTransitionRequest(BaseModel):
+    """Request body for escalation status transitions."""
+
+    new_status: str = Field(..., min_length=1, max_length=32)
+    resolution_note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class EscalationRecord(BaseModel):
+    """Escalation request payload."""
+
+    escalation_id: int
+    requester_employee_id: int
+    requester_email: str
+    thread_id: str
+    source_message_excerpt: str
+    status: str
+    created_at: str
+    updated_at: str
+    updated_by_employee_id: Optional[int] = None
+    resolution_note: Optional[str] = None
+
+
+class EscalationCounts(BaseModel):
+    """Escalation counts summary."""
+
+    total: int
+    pending: int
+    in_review: int
+    resolved: int
+
+
+class EscalationActionResult(BaseModel):
+    """Generic escalation action result."""
+
+    success: bool
+    escalation_id: Optional[int] = None
+    error: Optional[str] = None
 
 
 # ============================================================================
@@ -122,6 +170,16 @@ def get_or_create_session(session_id: str | None, user_email: str) -> tuple[str,
         "pending_confirmation": None,
     }
     return new_session_id, _sessions[new_session_id]
+
+
+def build_session_title(session: dict) -> Optional[str]:
+    """Return a concise session title from the first user query."""
+    for turn in session.get("turns", []):
+        query = str(turn.get("query", "")).strip()
+        if query:
+            condensed = " ".join(query.split())
+            return f"{condensed[:48]}..." if len(condensed) > 48 else condensed
+    return None
 
 
 # ============================================================================
@@ -236,7 +294,7 @@ def get_requester_context(user_email: str) -> dict:
         "employee_id": employee["employee_id"],
         "user_email": employee["email"],
         "name": employee["preferred_name"] or employee.get("legal_name", "Unknown"),
-        "role": employee["title"],
+        "role": employee_repo.get_role_by_email(user_email),
         "department": employee["department"],
         "direct_reports": [r["employee_id"] for r in direct_reports],
         "is_manager": len(direct_reports) > 0,
@@ -360,6 +418,7 @@ async def create_new_session(user: dict = Depends(get_current_user)):
         created_at=session["created_at"].isoformat(),
         turn_count=0,
         has_pending_confirmation=False,
+        title=None,
     )
 
 
@@ -379,6 +438,7 @@ async def get_session_info(session_id: str, user: dict = Depends(get_current_use
         created_at=session["created_at"].isoformat(),
         turn_count=len(session["turns"]),
         has_pending_confirmation=session["pending_confirmation"] is not None,
+        title=build_session_title(session),
     )
 
 
@@ -406,11 +466,85 @@ async def list_my_sessions(user: dict = Depends(get_current_user)):
             created_at=s["created_at"].isoformat(),
             turn_count=len(s["turns"]),
             has_pending_confirmation=s["pending_confirmation"] is not None,
+            title=build_session_title(s),
         )
         for sid, s in _sessions.items()
         if s["user_email"] == user["user_email"]
     ]
     return user_sessions
+
+
+@app.get("/escalations", response_model=list[EscalationRecord], tags=["Escalations"])
+async def list_escalations(
+    status: Optional[str] = None,
+    limit: int = 100,
+    user: dict = Depends(get_current_user),
+):
+    """List escalation requests visible to the current user."""
+    escalation_service = get_escalation_service()
+    rows = escalation_service.list_requests(
+        viewer_email=user["user_email"],
+        status=status,
+        limit=limit,
+    )
+    return [EscalationRecord(**row) for row in rows]
+
+
+@app.get("/escalations/counts", response_model=EscalationCounts, tags=["Escalations"])
+async def list_escalation_counts(user: dict = Depends(get_current_user)):
+    """List aggregate escalation counts visible to the current user."""
+    escalation_service = get_escalation_service()
+    counts = escalation_service.list_counts(user["user_email"])
+    return EscalationCounts(**counts)
+
+
+@app.post(
+    "/escalations",
+    response_model=EscalationActionResult,
+    tags=["Escalations"],
+)
+async def create_escalation(
+    request: EscalationCreateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Create a new escalation request from the current user."""
+    escalation_service = get_escalation_service()
+    result = escalation_service.create_request(
+        requester_employee_id=user["employee_id"],
+        requester_email=user["user_email"],
+        thread_id=request.thread_id,
+        source_message_excerpt=request.source_message_excerpt,
+    )
+    return EscalationActionResult(**result)
+
+
+@app.post(
+    "/escalations/{escalation_id}/transition",
+    response_model=EscalationActionResult,
+    tags=["Escalations"],
+)
+async def transition_escalation(
+    escalation_id: int,
+    request: EscalationTransitionRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Transition escalation status for triage roles."""
+    escalation_service = get_escalation_service()
+    result = escalation_service.transition_status(
+        viewer_email=user["user_email"],
+        actor_employee_id=user["employee_id"],
+        escalation_id=escalation_id,
+        new_status=request.new_status,
+        resolution_note=request.resolution_note,
+    )
+    if not result.get("success"):
+        message = result.get("error", "Failed to transition escalation.")
+        if "Only HR/Manager" in message:
+            raise HTTPException(status_code=403, detail=message)
+        if "not found" in message.lower():
+            raise HTTPException(status_code=404, detail=message)
+        raise HTTPException(status_code=400, detail=message)
+    return EscalationActionResult(**result)
 
 
 # ============================================================================
