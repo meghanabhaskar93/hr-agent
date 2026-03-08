@@ -20,7 +20,8 @@ services:
         value: amanda.foster@acme.com,jordan.lee@acme.com
       - key: LANGFUSE_ENABLED
         value: "false"
-  - type: static
+  - type: web
+    runtime: static
     name: pinghr-ui
     rootDir: apps/web-ts
     plan: free
