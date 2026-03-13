@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Navigate } from "react-router-dom";
 import { Loader2, ArrowUp, Sparkles, Mail, Bot } from "lucide-react";
 import { toast } from "sonner";
@@ -15,6 +15,7 @@ import {
   createSession,
   fetchEscalations,
   fetchSessions,
+  replyToEscalationAsRequester,
   sendChat,
   type BackendEscalation,
 } from "@/lib/backend";
@@ -141,6 +142,35 @@ function toRequestStatus(
 function mapEscalationToRequest(item: BackendEscalation): EscalatedRequest {
   const createdAt = new Date(item.created_at);
   const updatedAt = new Date(item.updated_at);
+  const lastMessageAt = item.last_message_at ? new Date(item.last_message_at) : null;
+  const hasHrMessage =
+    typeof item.last_message_to_requester === "string" &&
+    item.last_message_to_requester.trim().length > 0;
+  const latestUpdate =
+    item.last_message_to_requester ||
+    item.resolution_note ||
+    item.agent_suggestion ||
+    "Escalated from conversation for HR follow-up.";
+  const apiPriority = item.priority?.toLowerCase();
+  const mappedPriority =
+    apiPriority === "critical" || apiPriority === "high" || apiPriority === "medium"
+      ? apiPriority
+      : "high";
+
+  const auditLog: { label: string; timestamp: Date }[] = [
+    { label: "Escalated to HR by employee", timestamp: createdAt },
+  ];
+  if (hasHrMessage && lastMessageAt && !Number.isNaN(lastMessageAt.getTime())) {
+    auditLog.push({
+      label: "HR sent a clarifying question",
+      timestamp: lastMessageAt,
+    });
+  }
+  auditLog.push({
+    label: item.status === "RESOLVED" ? "Marked resolved by HR" : "Last status update",
+    timestamp: updatedAt,
+  });
+
   return {
     id: String(item.escalation_id),
     summary:
@@ -148,15 +178,12 @@ function mapEscalationToRequest(item: BackendEscalation): EscalatedRequest {
         ? `${item.source_message_excerpt.slice(0, 60)}...`
         : item.source_message_excerpt,
     fullSummary: item.source_message_excerpt,
-    aiResponse: item.resolution_note || "Escalated from conversation for HR follow-up.",
+    aiResponse: latestUpdate,
     status: toRequestStatus(item.status),
-    priority: item.status === "PENDING" ? "high" : "medium",
-    category: detectCategory(item.source_message_excerpt),
+    priority: mappedPriority,
+    category: item.category || detectCategory(item.source_message_excerpt),
     timestamp: createdAt,
-    auditLog: [
-      { label: "Escalated to HR by employee", timestamp: createdAt },
-      { label: "Last status update", timestamp: updatedAt },
-    ],
+    auditLog,
   };
 }
 
@@ -179,6 +206,16 @@ export default function ChatPage() {
   const displayName = user?.email?.split("@")[0] ?? "there";
   const capitalizedName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
 
+  const loadEscalatedRequests = useCallback(async () => {
+    if (!user?.email) return;
+    const escalations = await fetchEscalations(user.email);
+    setEscalatedRequests(
+      escalations
+        .map(mapEscalationToRequest)
+        .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+    );
+  }, [user?.email]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -190,10 +227,7 @@ export default function ChatPage() {
     const loadData = async () => {
       try {
         const storedTitles = loadConversationTitles(user.email);
-        const [sessions, escalations] = await Promise.all([
-          fetchSessions(user.email),
-          fetchEscalations(user.email),
-        ]);
+        const sessions = await fetchSessions(user.email);
 
         if (cancelled) return;
 
@@ -212,11 +246,7 @@ export default function ChatPage() {
             .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
         );
 
-        setEscalatedRequests(
-          escalations
-            .map(mapEscalationToRequest)
-            .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-        );
+        await loadEscalatedRequests();
       } catch (error) {
         console.error("Failed to load chat data:", error);
       }
@@ -226,7 +256,30 @@ export default function ChatPage() {
     return () => {
       cancelled = true;
     };
-  }, [user?.email]);
+  }, [user?.email, loadEscalatedRequests]);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    let stopped = false;
+
+    const refresh = async () => {
+      try {
+        await loadEscalatedRequests();
+      } catch {
+        // Keep UI usable if refresh fails transiently.
+      }
+    };
+
+    void refresh();
+    const interval = window.setInterval(() => {
+      if (!stopped) void refresh();
+    }, 15000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [user?.email, loadEscalatedRequests]);
 
   if (!session || !user) {
     return <Navigate to="/auth" replace />;
@@ -448,21 +501,39 @@ export default function ChatPage() {
       const result = await createEscalation(
         user.email,
         threadId,
-        queryText.slice(0, 1000)
+        queryText.slice(0, 1000),
+        {
+          priority: "HIGH",
+          category: detectCategory(queryText),
+          agentSuggestion: msg.content.slice(0, 3500),
+        }
       );
       if (!result.success) {
         throw new Error(result.error || "Escalation failed");
       }
 
-      const refreshed = await fetchEscalations(user.email);
-      setEscalatedRequests(
-        refreshed
-          .map(mapEscalationToRequest)
-          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-      );
+      await loadEscalatedRequests();
       toast.success(`Escalated to HR Ops (#${result.escalation_id ?? "new"})`);
     } catch (error: any) {
       toast.error(error?.message || "Failed to escalate");
+    }
+  };
+
+  const handleRequesterReply = async (requestId: string, message: string) => {
+    if (!user?.email) return;
+    const escalationId = Number(requestId);
+    if (!Number.isFinite(escalationId)) {
+      toast.error("Invalid escalation id");
+      return;
+    }
+
+    try {
+      await replyToEscalationAsRequester(user.email, escalationId, message);
+      await loadEscalatedRequests();
+      toast.success("Reply sent to HR");
+    } catch (error: any) {
+      toast.error(error?.message || "Failed to send reply");
+      throw error;
     }
   };
 
@@ -577,6 +648,7 @@ export default function ChatPage() {
         isOpen={requestsOpen}
         onClose={() => setRequestsOpen(false)}
         requests={escalatedRequests}
+        onReplyToRequest={handleRequesterReply}
       />
     </div>
   );

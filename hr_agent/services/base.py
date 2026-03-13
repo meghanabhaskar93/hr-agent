@@ -308,6 +308,7 @@ class EscalationService:
     """Service for human-in-the-loop escalation workflow."""
 
     ALLOWED_STATUSES = {"PENDING", "IN_REVIEW", "RESOLVED"}
+    ALLOWED_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
     ALLOWED_TRANSITIONS = {
         "PENDING": {"IN_REVIEW"},
         "IN_REVIEW": {"RESOLVED"},
@@ -319,20 +320,56 @@ class EscalationService:
         self.repo = get_escalation_repo()
         self.employee_repo = get_employee_repo()
 
+    def _is_triage_role(self, viewer_email: str) -> bool:
+        role = self.employee_repo.get_role_by_email(viewer_email)
+        return role in self.TRIAGE_ROLES
+
+    def _get_visible_request(self, viewer_email: str, escalation_id: int) -> dict | None:
+        row = self.repo.get_by_id(escalation_id)
+        if not row:
+            return None
+        if self._is_triage_role(viewer_email):
+            return row
+        if row["requester_email"] == viewer_email:
+            return row
+        return None
+
+    @staticmethod
+    def _compute_missing_fields(row: dict) -> list[str]:
+        required_fields = {
+            "priority": row.get("priority"),
+            "category": row.get("category"),
+            "assigned_to_email": row.get("assigned_to_email"),
+            "agent_suggestion": row.get("agent_suggestion"),
+        }
+        return [key for key, value in required_fields.items() if not value]
+
     def create_request(
         self,
         requester_employee_id: int,
         requester_email: str,
         thread_id: str,
         source_message_excerpt: str,
+        priority: str = "MEDIUM",
+        category: str | None = None,
+        agent_suggestion: str | None = None,
     ) -> dict:
         """Create a PENDING escalation request."""
-        escalation_id = self.repo.create(
+        normalized_priority = priority.upper()
+        if normalized_priority not in self.ALLOWED_PRIORITIES:
+            return {"success": False, "error": "Invalid priority."}
+
+        escalation_id = self.repo.create_with_event(
             requester_employee_id=requester_employee_id,
             requester_email=requester_email,
             thread_id=thread_id,
             source_message_excerpt=source_message_excerpt,
             status="PENDING",
+            priority=normalized_priority,
+            category=category,
+            agent_suggestion=agent_suggestion,
+            event_type="CREATED",
+            event_note="Escalation request created.",
         )
         return {"success": True, "escalation_id": escalation_id}
 
@@ -352,10 +389,186 @@ class EscalationService:
 
     def list_counts(self, viewer_email: str) -> dict:
         """List aggregate escalation counts visible to the viewer."""
-        role = self.employee_repo.get_role_by_email(viewer_email)
-        if role in self.TRIAGE_ROLES:
+        if self._is_triage_role(viewer_email):
             return self.repo.list_counts_for_requester(None)
         return self.repo.list_counts_for_requester(viewer_email)
+
+    def get_request_detail(self, viewer_email: str, escalation_id: int) -> dict:
+        """Fetch escalation request detail with timeline and completeness metadata."""
+        row = self._get_visible_request(viewer_email, escalation_id)
+        if not row:
+            return {"success": False, "error": "Escalation request not found."}
+
+        events = self.repo.list_events(escalation_id)
+        missing_fields = self._compute_missing_fields(row)
+        total_fields = 4
+        completeness_percent = int(((total_fields - len(missing_fields)) / total_fields) * 100)
+
+        return {
+            "success": True,
+            "request": row,
+            "timeline": events,
+            "missing_fields": missing_fields,
+            "completeness_percent": completeness_percent,
+        }
+
+    def assign_request(
+        self,
+        viewer_email: str,
+        actor_employee_id: int,
+        escalation_id: int,
+        assignee_email: str | None,
+    ) -> dict:
+        """Assign or unassign an escalation request."""
+        if not self._is_triage_role(viewer_email):
+            return {"success": False, "error": "Only HR/Manager can triage requests."}
+
+        existing = self.repo.get_by_id(escalation_id)
+        if not existing:
+            return {"success": False, "error": "Escalation request not found."}
+
+        if assignee_email:
+            assignee = self.employee_repo.get_by_email(assignee_email)
+            if not assignee:
+                return {"success": False, "error": "Assignee not found."}
+            ok = self.repo.update_assignment_with_event(
+                escalation_id=escalation_id,
+                updated_by_employee_id=actor_employee_id,
+                assigned_to_employee_id=assignee["employee_id"],
+                assigned_to_email=assignee["email"],
+                actor_email=viewer_email,
+                event_type="ASSIGNED",
+                event_note=f"Assigned to {assignee['email']}.",
+            )
+            if not ok:
+                return {"success": False, "error": "Failed to assign escalation request."}
+            return {"success": True}
+
+        ok = self.repo.update_assignment_with_event(
+            escalation_id=escalation_id,
+            updated_by_employee_id=actor_employee_id,
+            assigned_to_employee_id=None,
+            assigned_to_email=None,
+            actor_email=viewer_email,
+            event_type="UNASSIGNED",
+            event_note="Request unassigned.",
+        )
+        if not ok:
+            return {"success": False, "error": "Failed to unassign escalation request."}
+        return {"success": True}
+
+    def update_priority(
+        self,
+        viewer_email: str,
+        actor_employee_id: int,
+        escalation_id: int,
+        priority: str,
+    ) -> dict:
+        """Change escalation priority."""
+        if not self._is_triage_role(viewer_email):
+            return {"success": False, "error": "Only HR/Manager can triage requests."}
+
+        priority = priority.upper()
+        if priority not in self.ALLOWED_PRIORITIES:
+            return {"success": False, "error": "Invalid priority."}
+
+        existing = self.repo.get_by_id(escalation_id)
+        if not existing:
+            return {"success": False, "error": "Escalation request not found."}
+
+        ok = self.repo.update_priority_with_event(
+            escalation_id=escalation_id,
+            priority=priority,
+            updated_by_employee_id=actor_employee_id,
+            actor_email=viewer_email,
+        )
+        if not ok:
+            return {"success": False, "error": "Failed to update priority."}
+        return {"success": True}
+
+    def message_requester(
+        self,
+        viewer_email: str,
+        actor_employee_id: int,
+        escalation_id: int,
+        message: str,
+    ) -> dict:
+        """Log a message sent to the original requester."""
+        if not self._is_triage_role(viewer_email):
+            return {"success": False, "error": "Only HR/Manager can triage requests."}
+
+        existing = self.repo.get_by_id(escalation_id)
+        if not existing:
+            return {"success": False, "error": "Escalation request not found."}
+
+        if not message.strip():
+            return {"success": False, "error": "Message cannot be empty."}
+
+        ok = self.repo.record_message_to_requester_with_event(
+            escalation_id=escalation_id,
+            message=message.strip(),
+            updated_by_employee_id=actor_employee_id,
+            actor_email=viewer_email,
+        )
+        if not ok:
+            return {"success": False, "error": "Failed to record requester message."}
+        return {"success": True}
+
+    def reply_as_requester(
+        self,
+        viewer_email: str,
+        actor_employee_id: int,
+        escalation_id: int,
+        message: str,
+    ) -> dict:
+        """Allow the original requester to reply on an active escalation."""
+        existing = self.repo.get_by_id(escalation_id)
+        if not existing:
+            return {"success": False, "error": "Escalation request not found."}
+
+        if existing.get("requester_email") != viewer_email:
+            return {"success": False, "error": "Only requester can reply to this escalation."}
+
+        if existing.get("status") == "RESOLVED":
+            return {"success": False, "error": "Cannot reply to a resolved escalation."}
+
+        if not message.strip():
+            return {"success": False, "error": "Message cannot be empty."}
+
+        ok = self.repo.record_requester_reply_with_event(
+            escalation_id=escalation_id,
+            message=message.strip(),
+            updated_by_employee_id=actor_employee_id,
+            actor_email=viewer_email,
+        )
+        if not ok:
+            return {"success": False, "error": "Failed to record requester reply."}
+        return {"success": True}
+
+    def escalate_request(
+        self,
+        viewer_email: str,
+        actor_employee_id: int,
+        escalation_id: int,
+        note: str | None = None,
+    ) -> dict:
+        """Escalate severity for a request."""
+        if not self._is_triage_role(viewer_email):
+            return {"success": False, "error": "Only HR/Manager can triage requests."}
+
+        existing = self.repo.get_by_id(escalation_id)
+        if not existing:
+            return {"success": False, "error": "Escalation request not found."}
+
+        ok = self.repo.escalate_case_with_event(
+            escalation_id=escalation_id,
+            updated_by_employee_id=actor_employee_id,
+            actor_email=viewer_email,
+            note=note,
+        )
+        if not ok:
+            return {"success": False, "error": "Failed to escalate request."}
+        return {"success": True}
 
     def transition_status(
         self,
@@ -366,8 +579,7 @@ class EscalationService:
         resolution_note: str | None = None,
     ) -> dict:
         """Transition escalation status with role and state checks."""
-        role = self.employee_repo.get_role_by_email(viewer_email)
-        if role not in self.TRIAGE_ROLES:
+        if not self._is_triage_role(viewer_email):
             return {"success": False, "error": "Only HR/Manager can triage requests."}
 
         if new_status not in self.ALLOWED_STATUSES:
@@ -385,10 +597,11 @@ class EscalationService:
                 "error": f"Invalid transition: {current_status} -> {new_status}.",
             }
 
-        ok = self.repo.transition_status(
+        ok = self.repo.transition_status_with_event(
             escalation_id=escalation_id,
             status=new_status,
             updated_by_employee_id=actor_employee_id,
+            actor_email=viewer_email,
             resolution_note=resolution_note,
         )
         if not ok:

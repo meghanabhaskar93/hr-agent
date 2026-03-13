@@ -23,6 +23,9 @@ export interface BackendEscalation {
   escalation_id: number;
   requester_employee_id: number;
   requester_email: string;
+  requester_name?: string | null;
+  requester_department?: string | null;
+  requester_title?: string | null;
   thread_id: string;
   source_message_excerpt: string;
   status: "PENDING" | "IN_REVIEW" | "RESOLVED";
@@ -30,6 +33,34 @@ export interface BackendEscalation {
   updated_at: string;
   updated_by_employee_id: number | null;
   resolution_note: string | null;
+  priority?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | null;
+  category?: string | null;
+  assigned_to_employee_id?: number | null;
+  assigned_to_email?: string | null;
+  assigned_to_name?: string | null;
+  agent_suggestion?: string | null;
+  last_message_to_requester?: string | null;
+  last_message_at?: string | null;
+  escalation_level?: number | null;
+}
+
+export interface BackendEscalationTimelineEvent {
+  event_id: number;
+  escalation_id: number;
+  event_type: string;
+  event_note: string | null;
+  actor_employee_id: number | null;
+  actor_email: string | null;
+  actor_name: string | null;
+  metadata_json: string | null;
+  created_at: string;
+}
+
+export interface BackendEscalationDetail {
+  request: BackendEscalation;
+  timeline: BackendEscalationTimelineEvent[];
+  missing_fields: string[];
+  completeness_percent: number;
 }
 
 async function apiRequest<T>(
@@ -108,7 +139,12 @@ export async function fetchEscalations(userEmail: string): Promise<BackendEscala
 export async function createEscalation(
   userEmail: string,
   threadId: string,
-  sourceMessageExcerpt: string
+  sourceMessageExcerpt: string,
+  options?: {
+    priority?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+    category?: string;
+    agentSuggestion?: string;
+  }
 ): Promise<{ success: boolean; escalation_id?: number; error?: string | null }> {
   return apiRequest<{ success: boolean; escalation_id?: number; error?: string | null }>(
     "/escalations",
@@ -118,8 +154,21 @@ export async function createEscalation(
       body: JSON.stringify({
         thread_id: threadId,
         source_message_excerpt: sourceMessageExcerpt,
+        priority: options?.priority ?? "MEDIUM",
+        category: options?.category ?? null,
+        agent_suggestion: options?.agentSuggestion ?? null,
       }),
     }
+  );
+}
+
+export async function fetchEscalationDetail(
+  userEmail: string,
+  escalationId: number
+): Promise<BackendEscalationDetail> {
+  return apiRequest<BackendEscalationDetail>(
+    `/escalations/${escalationId}/detail`,
+    userEmail
   );
 }
 
@@ -137,6 +186,91 @@ export async function transitionEscalation(
       body: JSON.stringify({
         new_status: nextStatus,
         resolution_note: resolutionNote ?? null,
+      }),
+    }
+  );
+}
+
+export async function assignEscalation(
+  userEmail: string,
+  escalationId: number,
+  assigneeEmail?: string | null
+): Promise<{ success: boolean; error?: string | null }> {
+  return apiRequest<{ success: boolean; error?: string | null }>(
+    `/escalations/${escalationId}/assign`,
+    userEmail,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        assignee_email: assigneeEmail ?? null,
+      }),
+    }
+  );
+}
+
+export async function changeEscalationPriority(
+  userEmail: string,
+  escalationId: number,
+  priority: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL"
+): Promise<{ success: boolean; error?: string | null }> {
+  return apiRequest<{ success: boolean; error?: string | null }>(
+    `/escalations/${escalationId}/priority`,
+    userEmail,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        priority,
+      }),
+    }
+  );
+}
+
+export async function messageEscalationRequester(
+  userEmail: string,
+  escalationId: number,
+  message: string
+): Promise<{ success: boolean; error?: string | null }> {
+  return apiRequest<{ success: boolean; error?: string | null }>(
+    `/escalations/${escalationId}/message`,
+    userEmail,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        message,
+      }),
+    }
+  );
+}
+
+export async function replyToEscalationAsRequester(
+  userEmail: string,
+  escalationId: number,
+  message: string
+): Promise<{ success: boolean; error?: string | null }> {
+  return apiRequest<{ success: boolean; error?: string | null }>(
+    `/escalations/${escalationId}/requester-reply`,
+    userEmail,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        message,
+      }),
+    }
+  );
+}
+
+export async function escalateEscalationCase(
+  userEmail: string,
+  escalationId: number,
+  note?: string
+): Promise<{ success: boolean; error?: string | null }> {
+  return apiRequest<{ success: boolean; error?: string | null }>(
+    `/escalations/${escalationId}/escalate`,
+    userEmail,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        note: note ?? null,
       }),
     }
   );

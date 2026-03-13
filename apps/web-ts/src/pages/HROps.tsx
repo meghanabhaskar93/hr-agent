@@ -1,21 +1,22 @@
-import { useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
   CheckCircle2,
-  Clock,
-  Send,
-  Eye,
   ChevronDown,
   ChevronUp,
-  UserPlus,
+  Clock,
+  FileText,
   Filter,
   Mail,
   MessageSquare,
-  FileText,
-  Timer,
+  ShieldAlert,
+  UserMinus,
+  UserPlus,
 } from "lucide-react";
+import { toast } from "sonner";
+
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
@@ -35,101 +36,227 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import HRConversationSidebar from "@/components/HRConversationSidebar";
-import MyRequestsPanel from "@/components/MyRequestsPanel";
+import MyRequestsPanel, { type EscalatedRequest } from "@/components/MyRequestsPanel";
 import type { Conversation } from "@/components/ConversationSidebar";
 import { useAuth } from "@/contexts/AuthContext";
-import { useHRTickets, type ResolutionTag, resolutionTagConfig } from "@/contexts/HRTicketsContext";
-import { toast } from "sonner";
+import {
+  assignEscalation,
+  changeEscalationPriority,
+  escalateEscalationCase,
+  fetchEscalationDetail,
+  fetchEscalations,
+  messageEscalationRequester,
+  transitionEscalation,
+  type BackendEscalation,
+  type BackendEscalationDetail,
+} from "@/lib/backend";
 
-type Priority = "critical" | "high" | "medium";
-type Status = "pending" | "assigned" | "in_progress" | "in_review" | "resolved";
+type Priority = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
+type Status = "PENDING" | "IN_REVIEW" | "RESOLVED";
+type FilterCategory = "all" | string;
 
 const priorityConfig: Record<Priority, { label: string; className: string }> = {
-  critical: { label: "Critical", className: "bg-destructive/10 text-destructive border-destructive/20" },
-  high: { label: "High", className: "bg-warning/10 text-warning border-warning/20" },
-  medium: { label: "Medium", className: "bg-muted text-muted-foreground" },
+  CRITICAL: { label: "Critical", className: "bg-destructive/10 text-destructive border-destructive/20" },
+  HIGH: { label: "High", className: "bg-warning/10 text-warning border-warning/20" },
+  MEDIUM: { label: "Medium", className: "bg-muted text-muted-foreground border-border" },
+  LOW: { label: "Low", className: "bg-accent/20 text-accent-foreground border-accent/30" },
 };
 
 const statusConfig: Record<Status, { label: string; icon: typeof Clock; color: string }> = {
-  pending: { label: "Pending", icon: AlertTriangle, color: "text-warning" },
-  assigned: { label: "Assigned", icon: UserPlus, color: "text-primary" },
-  in_progress: { label: "In Progress", icon: MessageSquare, color: "text-primary" },
-  in_review: { label: "In Review", icon: Clock, color: "text-info" },
-  resolved: { label: "Resolved", icon: CheckCircle2, color: "text-emerald-500" },
+  PENDING: { label: "Pending", icon: AlertTriangle, color: "text-warning" },
+  IN_REVIEW: { label: "In Review", icon: Clock, color: "text-info" },
+  RESOLVED: { label: "Resolved", icon: CheckCircle2, color: "text-emerald-500" },
 };
 
-type FilterCategory = "all" | string;
+const priorityOrder: Record<string, number> = {
+  CRITICAL: 0,
+  HIGH: 1,
+  MEDIUM: 2,
+  LOW: 3,
+};
 
-function slaTimeRemaining(inReviewSince: Date | undefined, slaHours: number): { label: string; urgent: boolean } {
-  if (!inReviewSince) return { label: `${slaHours}h SLA`, urgent: false };
-  const elapsed = (Date.now() - inReviewSince.getTime()) / 3600000;
-  const remaining = slaHours - elapsed;
-  if (remaining <= 0) return { label: "SLA expired", urgent: true };
-  if (remaining < 6) return { label: `${Math.ceil(remaining)}h left`, urgent: true };
-  return { label: `${Math.ceil(remaining)}h left`, urgent: false };
+function mapPriority(p: string | null | undefined): Priority {
+  if (p === "CRITICAL" || p === "HIGH" || p === "MEDIUM" || p === "LOW") return p;
+  return "MEDIUM";
+}
+
+function sortEscalations(items: BackendEscalation[]): BackendEscalation[] {
+  return [...items].sort((a, b) => {
+    const pDiff = (priorityOrder[a.priority || "MEDIUM"] ?? 2) - (priorityOrder[b.priority || "MEDIUM"] ?? 2);
+    if (pDiff !== 0) return pDiff;
+    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+  });
+}
+
+function formatDateTime(iso: string | null | undefined): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleString();
+}
+
+function toMyRequest(
+  item: BackendEscalation,
+  detail: BackendEscalationDetail | null
+): EscalatedRequest {
+  const status =
+    item.status === "IN_REVIEW"
+      ? "in_review"
+      : item.status === "RESOLVED"
+        ? "resolved"
+        : "pending";
+
+  const priority = mapPriority(item.priority).toLowerCase();
+  const panelPriority =
+    priority === "critical" || priority === "high" || priority === "medium"
+      ? priority
+      : "medium";
+
+  return {
+    id: String(item.escalation_id),
+    summary:
+      item.source_message_excerpt.length > 60
+        ? `${item.source_message_excerpt.slice(0, 60)}...`
+        : item.source_message_excerpt,
+    fullSummary: `${item.requester_name || item.requester_email}: ${item.source_message_excerpt}`,
+    aiResponse:
+      item.agent_suggestion ||
+      item.resolution_note ||
+      "No agent suggestion captured for this request.",
+    status,
+    priority: panelPriority,
+    category: item.category || "General",
+    timestamp: new Date(item.created_at),
+    auditLog:
+      detail?.timeline?.map((event) => ({
+        label: event.event_note || event.event_type.replace(/_/g, " "),
+        timestamp: new Date(event.created_at),
+      })) || [
+        { label: "Escalated", timestamp: new Date(item.created_at) },
+        { label: "Last update", timestamp: new Date(item.updated_at) },
+      ],
+  };
 }
 
 export default function HROps() {
   const { user } = useAuth();
-  const { tickets, assignTicketToMe, updateTicketStatus, addResolutionNote, getAssignedTickets, getAssignedRequests } = useHRTickets();
   const navigate = useNavigate();
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [categoryFilter, setCategoryFilter] = useState<FilterCategory>("all");
   const [requestsOpen, setRequestsOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
-  const [resolutionNotes, setResolutionNotes] = useState<Record<string, string>>({});
-  const [resolutionTags, setResolutionTags] = useState<Record<string, ResolutionTag>>({});
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<FilterCategory>("all");
+  const [loading, setLoading] = useState(true);
+  const [items, setItems] = useState<BackendEscalation[]>([]);
+  const [detailById, setDetailById] = useState<Record<number, BackendEscalationDetail>>({});
+  const [messageDraft, setMessageDraft] = useState<Record<number, string>>({});
+  const [resolutionNotes, setResolutionNotes] = useState<Record<number, string>>({});
 
-  const displayName = user?.email?.split("@")[0] ?? "HR User";
-  const categories = Array.from(new Set(tickets.map((t) => t.category)));
-  const assignedTickets = getAssignedTickets(displayName);
-  const assignedRequests = getAssignedRequests(displayName);
+  const currentUserEmail = user?.email?.toLowerCase() || "";
 
-  const filtered = categoryFilter === "all" ? tickets : tickets.filter((t) => t.category === categoryFilter);
-  const sorted = [...filtered].sort((a, b) => {
-    const statusOrder: Record<Status, number> = { pending: 0, assigned: 1, in_progress: 2, in_review: 3, resolved: 4 };
-    const statusDiff = statusOrder[a.status] - statusOrder[b.status];
-    if (statusDiff !== 0) return statusDiff;
-    const order: Record<Priority, number> = { critical: 0, high: 1, medium: 2 };
-    return order[a.priority] - order[b.priority];
-  });
+  const loadEscalations = useCallback(async () => {
+    if (!user?.email) return;
+    const rows = await fetchEscalations(user.email);
+    setItems(rows);
+  }, [user?.email]);
 
-  const pendingCount = tickets.filter((t) => t.status === "pending").length;
-  const inProgressCount = tickets.filter((t) => ["assigned", "in_progress"].includes(t.status)).length;
-  const inReviewCount = tickets.filter((t) => t.status === "in_review").length;
+  const loadDetail = useCallback(
+    async (escalationId: number) => {
+      if (!user?.email) return;
+      const detail = await fetchEscalationDetail(user.email, escalationId);
+      setDetailById((prev) => ({ ...prev, [escalationId]: detail }));
+    },
+    [user?.email]
+  );
 
-  const handleWorkOnThis = (ticketId: string) => {
-    const ticket = tickets.find((t) => t.id === ticketId);
-    if (!ticket) return;
+  const syncEscalation = useCallback(
+    async (escalationId: number) => {
+      if (!user?.email) return;
+      const detail = await fetchEscalationDetail(user.email, escalationId);
+      setDetailById((prev) => ({ ...prev, [escalationId]: detail }));
+      setItems((prev) =>
+        prev.map((item) =>
+          item.escalation_id === escalationId ? detail.request : item
+        )
+      );
+    },
+    [user?.email]
+  );
 
-    // Update status to in_progress
-    updateTicketStatus(ticketId, "in_progress");
+  useEffect(() => {
+    if (!user?.email) return;
+    let cancelled = false;
+    const bootstrap = async () => {
+      setLoading(true);
+      try {
+        const rows = await fetchEscalations(user.email);
+        if (!cancelled) setItems(rows);
+      } catch (error: any) {
+        toast.error(error?.message || "Failed to load HR queue");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void bootstrap();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.email]);
 
-    // Navigate to HR Chat with ticket context
-    navigate(`/hr-chat?ticket=${ticketId}`);
-  };
-
-  const handleMoveToReview = (ticketId: string) => {
-    const note = resolutionNotes[ticketId];
-    const tag = resolutionTags[ticketId];
-    if (!note?.trim()) {
-      toast.error("Please add a resolution note before moving to review.");
-      return;
+  const handleExpand = async (escalationId: number) => {
+    const isExpanded = expandedId === escalationId;
+    setExpandedId(isExpanded ? null : escalationId);
+    if (isExpanded || detailById[escalationId]) return;
+    try {
+      await loadDetail(escalationId);
+    } catch (error: any) {
+      toast.error(error?.message || "Failed to load request detail");
     }
-    if (!tag) {
-      toast.error("Please select a resolution tag before moving to review.");
-      return;
-    }
-    addResolutionNote(ticketId, note.trim(), tag);
-    updateTicketStatus(ticketId, "in_review");
-    toast.success("Ticket moved to In Review. Waiting for employee confirmation.");
   };
 
-  const handleResolve = (ticketId: string) => {
-    updateTicketStatus(ticketId, "resolved");
-    toast.success("Ticket resolved!");
+  const runAction = async (
+    escalationId: number,
+    action: () => Promise<unknown>,
+    successMessage: string
+  ) => {
+    try {
+      await action();
+      toast.success(successMessage);
+      try {
+        await syncEscalation(escalationId);
+      } catch {
+        // Fallback to full queue refresh only if targeted sync fails.
+        await loadEscalations();
+      }
+    } catch (error: any) {
+      toast.error(error?.message || "Action failed");
+    }
   };
+
+  const categories = useMemo(
+    () => Array.from(new Set(items.map((item) => item.category || "General"))),
+    [items]
+  );
+
+  const filtered = useMemo(() => {
+    if (categoryFilter === "all") return items;
+    return items.filter((item) => (item.category || "General") === categoryFilter);
+  }, [categoryFilter, items]);
+
+  const assignedToMeAll = filtered.filter(
+    (item) => (item.assigned_to_email || "").toLowerCase() === currentUserEmail
+  );
+  const unresolved = filtered.filter((item) => item.status !== "RESOLVED");
+  const resolved = filtered.filter((item) => item.status === "RESOLVED");
+  const assignedToMe = assignedToMeAll.filter((item) => item.status !== "RESOLVED");
+  const unassigned = unresolved.filter((item) => !item.assigned_to_email);
+  const assignedToOthers = unresolved.filter(
+    (item) => item.assigned_to_email && (item.assigned_to_email || "").toLowerCase() !== currentUserEmail
+  );
+
+  const assignedRequests = sortEscalations(assignedToMeAll).map((item) =>
+    toMyRequest(item, detailById[item.escalation_id] || null)
+  );
 
   return (
     <div className="min-h-screen flex w-full">
@@ -142,15 +269,18 @@ export default function HROps() {
           setConversations((prev) => prev.filter((c) => c.id !== id));
           if (activeConversation === id) setActiveConversation(null);
         }}
-        onClearAll={() => { setConversations([]); setActiveConversation(null); }}
-        assignedCount={assignedTickets.length}
+        onClearAll={() => {
+          setConversations([]);
+          setActiveConversation(null);
+        }}
+        assignedCount={assignedToMeAll.length}
       />
 
       <main className="flex-1 flex flex-col min-w-0 h-screen overflow-auto">
         <header className="flex items-center justify-between px-6 py-3 border-b bg-card">
           <div className="flex items-center gap-2">
             <span className="font-semibold text-base text-primary">PingHR</span>
-            <span className="text-muted-foreground text-sm">/ HR Ops</span>
+            <span className="text-muted-foreground text-sm">/ HR Ops Dashboard</span>
           </div>
           <Button
             variant="outline"
@@ -160,282 +290,406 @@ export default function HROps() {
           >
             <Mail className="h-4 w-4" />
             My Requests
-            {assignedTickets.length > 0 && (
+            {assignedToMeAll.length > 0 && (
               <span className="ml-1 h-5 min-w-5 px-1 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold flex items-center justify-center">
-                {assignedTickets.length}
+                {assignedToMeAll.length}
               </span>
             )}
           </Button>
         </header>
 
-        <div className="p-6 max-w-6xl mx-auto w-full">
-          {/* Summary stats */}
+        <div className="p-6 max-w-7xl mx-auto w-full">
           <div className="flex items-center justify-between mb-6">
             <div>
-              <h1 className="text-2xl font-bold mb-1">HR Ops Queue</h1>
+              <h1 className="text-2xl font-bold mb-1">Escalation Queue</h1>
               <p className="text-muted-foreground text-sm">
-                {pendingCount} pending · {inProgressCount} in progress · {inReviewCount} in review · {tickets.length} total
+                {items.length} total · {unresolved.length} active · {resolved.length} resolved
               </p>
             </div>
             <div className="flex items-center gap-2">
               <Filter className="h-4 w-4 text-muted-foreground" />
               <Select value={categoryFilter} onValueChange={setCategoryFilter}>
-                <SelectTrigger className="w-48 h-9 text-sm">
+                <SelectTrigger className="w-56 h-9 text-sm">
                   <SelectValue placeholder="All categories" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All categories</SelectItem>
                   {categories.map((cat) => (
-                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                    <SelectItem key={cat} value={cat}>
+                      {cat}
+                    </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
           </div>
 
-          <div className="bg-card border rounded-xl shadow-soft overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-muted/30">
-                  <TableHead className="w-[100px]">Priority</TableHead>
-                  <TableHead>Employee</TableHead>
-                  <TableHead className="max-w-[300px]">Query</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="w-[180px]">Actions</TableHead>
-                  <TableHead className="w-[60px]" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {sorted.map((ticket) => {
-                  const pConfig = priorityConfig[ticket.priority];
-                  const sConfig = statusConfig[ticket.status];
-                  const isExpanded = expandedId === ticket.id;
-                  const isAssignedToMe = ticket.assignedTo === displayName;
-
-                  return (
-                    <>
-                      <TableRow
-                        key={ticket.id}
-                        className={`cursor-pointer hover:bg-muted/30 ${isAssignedToMe ? "bg-primary/5" : ""}`}
-                        onClick={() => setExpandedId(isExpanded ? null : ticket.id)}
-                      >
-                        <TableCell>
-                          <Badge variant="outline" className={`text-xs ${pConfig.className}`}>
-                            {pConfig.label}
-                          </Badge>
-                        </TableCell>
-                        <TableCell className="font-medium text-sm">{ticket.employee}</TableCell>
-                        <TableCell className="text-sm text-muted-foreground max-w-[300px] truncate">
-                          {ticket.question}
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <Badge variant="outline" className="text-xs">{ticket.category}</Badge>
-                            {ticket.resolutionTag && (
-                              <Badge variant="outline" className={`text-xs ${resolutionTagConfig[ticket.resolutionTag].className}`}>
-                                {resolutionTagConfig[ticket.resolutionTag].label}
-                              </Badge>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell>
-                          <Badge variant="secondary" className="text-xs gap-1">
-                            <sConfig.icon className={`h-3 w-3 ${sConfig.color}`} />
-                            {sConfig.label}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {!ticket.assignedTo && (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs gap-1"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                assignTicketToMe(ticket.id, displayName);
-                              }}
-                            >
-                              <UserPlus className="h-3 w-3" />
-                              Assign to me
-                            </Button>
-                          )}
-                          {isAssignedToMe && !["in_review", "resolved"].includes(ticket.status) && (
-                            <Button
-                              size="sm"
-                              className="h-7 text-xs gap-1"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleWorkOnThis(ticket.id);
-                              }}
-                            >
-                              <MessageSquare className="h-3 w-3" />
-                              Work on this
-                            </Button>
-                          )}
-                          {isAssignedToMe && ticket.status === "in_review" && (
-                            <div className="flex items-center gap-1.5">
-                              <Timer className={`h-3 w-3 ${slaTimeRemaining(ticket.inReviewSince, ticket.slaHours).urgent ? "text-destructive" : "text-muted-foreground"}`} />
-                              <span className={`text-xs ${slaTimeRemaining(ticket.inReviewSince, ticket.slaHours).urgent ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                                {slaTimeRemaining(ticket.inReviewSince, ticket.slaHours).label}
-                              </span>
-                            </div>
-                          )}
-                          {ticket.status === "resolved" && (
-                            <span className="text-xs text-emerald-600 font-medium flex items-center gap-1">
-                              <CheckCircle2 className="h-3 w-3" /> Resolved
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          {isExpanded ? (
-                            <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                          ) : (
-                            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                          )}
-                        </TableCell>
+          {loading ? (
+            <div className="text-sm text-muted-foreground">Loading queue...</div>
+          ) : (
+            <div className="space-y-5">
+              {[
+                { label: "Assigned to Me", rows: sortEscalations(assignedToMe) },
+                { label: "Unassigned", rows: sortEscalations(unassigned) },
+                { label: "Assigned to Others", rows: sortEscalations(assignedToOthers) },
+                { label: "Resolved", rows: sortEscalations(resolved) },
+              ].map((section) => (
+                <div key={section.label} className="bg-card border rounded-xl shadow-soft overflow-hidden">
+                  <div className="px-4 py-3 border-b bg-muted/20 text-sm font-semibold">
+                    {section.label} ({section.rows.length})
+                  </div>
+                  <Table>
+                    <TableHeader>
+                      <TableRow className="bg-muted/30">
+                        <TableHead className="w-[110px]">Priority</TableHead>
+                        <TableHead>Requester</TableHead>
+                        <TableHead className="max-w-[320px]">Request</TableHead>
+                        <TableHead>Category</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Assignee</TableHead>
+                        <TableHead className="w-[60px]" />
                       </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {section.rows.map((item) => {
+                        const escalationId = item.escalation_id;
+                        const isExpanded = expandedId === escalationId;
+                        const priority = mapPriority(item.priority);
+                        const pConfig = priorityConfig[priority];
+                        const status = (item.status || "PENDING") as Status;
+                        const sConfig = statusConfig[status];
+                        const detail = detailById[escalationId];
+                        const isMine =
+                          (item.assigned_to_email || "").toLowerCase() === currentUserEmail;
+                        const missingFields = detail?.missing_fields || [];
 
-                      {isExpanded && (
-                        <TableRow key={`${ticket.id}-expanded`}>
-                          <TableCell colSpan={7} className="bg-muted/10 p-0">
-                            <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-6 py-4 space-y-4">
-                              {/* Employee Question */}
-                              <div>
-                                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Employee Question</h4>
-                                <p className="text-sm bg-card rounded-lg p-3 border">{ticket.question}</p>
-                              </div>
+                        return (
+                          <Fragment key={escalationId}>
+                            <TableRow
+                              className={`cursor-pointer hover:bg-muted/30 ${isMine ? "bg-primary/5" : ""}`}
+                              onClick={() => void handleExpand(escalationId)}
+                            >
+                              <TableCell>
+                                <Badge variant="outline" className={`text-xs ${pConfig.className}`}>
+                                  {pConfig.label}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="font-medium text-sm">
+                                {item.requester_name || item.requester_email}
+                              </TableCell>
+                              <TableCell className="text-sm text-muted-foreground max-w-[320px] truncate">
+                                {item.source_message_excerpt}
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="outline" className="text-xs">
+                                  {item.category || "General"}
+                                </Badge>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant="secondary" className="text-xs gap-1">
+                                  <sConfig.icon className={`h-3 w-3 ${sConfig.color}`} />
+                                  {sConfig.label}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-xs text-muted-foreground">
+                                {item.assigned_to_name || item.assigned_to_email || "Unassigned"}
+                              </TableCell>
+                              <TableCell>
+                                {isExpanded ? (
+                                  <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                                )}
+                              </TableCell>
+                            </TableRow>
 
-                              {/* AI-Drafted Response */}
-                              <div>
-                                <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">AI-Drafted Response</h4>
-                                <div className="text-sm bg-accent/30 rounded-lg p-3 whitespace-pre-wrap border border-primary/10">
-                                  {ticket.aiDraft.split(/(\*\*.*?\*\*)/).map((part, i) =>
-                                    part.startsWith("**") && part.endsWith("**") ? (
-                                      <strong key={i}>{part.slice(2, -2)}</strong>
-                                    ) : (
-                                      <span key={i}>{part}</span>
-                                    )
-                                  )}
-                                </div>
-                              </div>
+                            {isExpanded && (
+                              <TableRow>
+                                <TableCell colSpan={7} className="bg-muted/10 p-0">
+                                  <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="px-6 py-4 space-y-4">
+                                    <div className="grid md:grid-cols-2 gap-4">
+                                      <div className="space-y-4">
+                                        <div>
+                                          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                                            Request Detail
+                                          </h4>
+                                          <p className="text-sm bg-card rounded-lg p-3 border">
+                                            {item.source_message_excerpt}
+                                          </p>
+                                        </div>
+                                        <div>
+                                          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                                            Agent Suggestion
+                                          </h4>
+                                          <div className="text-sm bg-accent/30 rounded-lg p-3 whitespace-pre-wrap border border-primary/10">
+                                            {item.agent_suggestion || "No suggestion captured."}
+                                          </div>
+                                        </div>
+                                        <div>
+                                          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                                            Completeness
+                                          </h4>
+                                          <div className="rounded-lg border bg-card p-3 space-y-1">
+                                            <div className="text-sm">
+                                              {detail ? `${detail.completeness_percent}% complete` : "Loading..."}
+                                            </div>
+                                            <div className="text-xs text-muted-foreground">
+                                              Missing: {missingFields.length > 0 ? missingFields.join(", ") : "None"}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
 
-                              {/* Resolution Note */}
-                              {isAssignedToMe && ["assigned", "in_progress"].includes(ticket.status) && (
-                                <div className="space-y-3">
-                                  <div>
-                                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                                      <FileText className="h-3 w-3 inline mr-1" />
-                                      Resolution Note
-                                    </h4>
-                                    <Textarea
-                                      placeholder="Add your resolution note here... (required to move to In Review)"
-                                      value={resolutionNotes[ticket.id] || ""}
-                                      onChange={(e) => setResolutionNotes((prev) => ({ ...prev, [ticket.id]: e.target.value }))}
-                                      className="text-sm min-h-[80px]"
-                                    />
-                                  </div>
-                                  <div>
-                                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
-                                      Resolution Tag
-                                    </h4>
+                                      <div className="space-y-4">
+                                        <div>
+                                          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                                            Timeline
+                                          </h4>
+                                          <div className="rounded-lg border bg-card p-3 max-h-[280px] overflow-auto space-y-2">
+                                            {(detail?.timeline || []).length === 0 && (
+                                              <div className="text-xs text-muted-foreground">No timeline events yet.</div>
+                                            )}
+                                            {(detail?.timeline || []).map((event) => (
+                                              <div key={event.event_id} className="text-xs">
+                                                <div className="font-medium">
+                                                  {event.event_type.replace(/_/g, " ")}
+                                                </div>
+                                                <div className="text-muted-foreground">
+                                                  {event.event_note || "No note"} · {formatDateTime(event.created_at)}
+                                                </div>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        </div>
+
+                                        <div>
+                                          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">
+                                            Message Requester
+                                          </h4>
+                                          <Textarea
+                                            placeholder="Write a message to requester..."
+                                            value={messageDraft[escalationId] || ""}
+                                            onChange={(e) =>
+                                              setMessageDraft((prev) => ({
+                                                ...prev,
+                                                [escalationId]: e.target.value,
+                                              }))
+                                            }
+                                            className="text-sm min-h-[80px]"
+                                          />
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    <div className="grid md:grid-cols-2 gap-3">
+                                      <Select
+                                        value={priority}
+                                        onValueChange={(value) => {
+                                          const next = value as Priority;
+                                          void runAction(
+                                            escalationId,
+                                            () =>
+                                              changeEscalationPriority(
+                                                user!.email,
+                                                escalationId,
+                                                next
+                                              ),
+                                            "Priority updated"
+                                          );
+                                        }}
+                                      >
+                                        <SelectTrigger className="h-9 text-sm">
+                                          <SelectValue placeholder="Change priority" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                          <SelectItem value="CRITICAL">Critical</SelectItem>
+                                          <SelectItem value="HIGH">High</SelectItem>
+                                          <SelectItem value="MEDIUM">Medium</SelectItem>
+                                          <SelectItem value="LOW">Low</SelectItem>
+                                        </SelectContent>
+                                      </Select>
+
+                                      <Textarea
+                                        placeholder="Resolution note (used for resolve/escalate)"
+                                        value={resolutionNotes[escalationId] || ""}
+                                        onChange={(e) =>
+                                          setResolutionNotes((prev) => ({
+                                            ...prev,
+                                            [escalationId]: e.target.value,
+                                          }))
+                                        }
+                                        className="text-sm min-h-[56px]"
+                                      />
+                                    </div>
+
                                     <div className="flex flex-wrap gap-2">
-                                      {(Object.entries(resolutionTagConfig) as [ResolutionTag, { label: string; className: string }][]).map(([key, config]) => (
-                                        <button
-                                          key={key}
+                                      {!isMine ? (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
                                           onClick={(e) => {
                                             e.stopPropagation();
-                                            setResolutionTags((prev) => ({ ...prev, [ticket.id]: key }));
+                                            void runAction(
+                                              escalationId,
+                                              () =>
+                                                assignEscalation(
+                                                  user!.email,
+                                                  escalationId,
+                                                  user!.email
+                                                ),
+                                              "Assigned to you"
+                                            );
                                           }}
-                                          className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
-                                            resolutionTags[ticket.id] === key
-                                              ? `${config.className} ring-2 ring-offset-1 ring-current`
-                                              : "border-border text-muted-foreground hover:bg-muted"
-                                          }`}
                                         >
-                                          {config.label}
-                                        </button>
-                                      ))}
+                                          <UserPlus className="h-3.5 w-3.5 mr-1.5" />
+                                          Assign to me
+                                        </Button>
+                                      ) : (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void runAction(
+                                              escalationId,
+                                              () => assignEscalation(user!.email, escalationId, null),
+                                              "Unassigned"
+                                            );
+                                          }}
+                                        >
+                                          <UserMinus className="h-3.5 w-3.5 mr-1.5" />
+                                          Unassign
+                                        </Button>
+                                      )}
+
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const note = messageDraft[escalationId]?.trim();
+                                          if (!note) {
+                                            toast.error("Please enter a message first.");
+                                            return;
+                                          }
+                                          void runAction(
+                                            escalationId,
+                                            () =>
+                                              messageEscalationRequester(
+                                                user!.email,
+                                                escalationId,
+                                                note
+                                              ),
+                                            "Requester message logged"
+                                          );
+                                        }}
+                                      >
+                                        <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
+                                        Message requester
+                                      </Button>
+
+                                      {item.status === "PENDING" && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void runAction(
+                                              escalationId,
+                                              () =>
+                                                transitionEscalation(
+                                                  user!.email,
+                                                  escalationId,
+                                                  "IN_REVIEW"
+                                                ),
+                                              "Moved to In Review"
+                                            );
+                                          }}
+                                        >
+                                          <Clock className="h-3.5 w-3.5 mr-1.5" />
+                                          Move to In Review
+                                        </Button>
+                                      )}
+
+                                      {item.status === "IN_REVIEW" && (
+                                        <Button
+                                          size="sm"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void runAction(
+                                              escalationId,
+                                              () =>
+                                                transitionEscalation(
+                                                  user!.email,
+                                                  escalationId,
+                                                  "RESOLVED",
+                                                  resolutionNotes[escalationId]?.trim() || undefined
+                                                ),
+                                              "Marked resolved"
+                                            );
+                                          }}
+                                        >
+                                          <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />
+                                          Mark resolved
+                                        </Button>
+                                      )}
+
+                                      {item.status !== "RESOLVED" && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            void runAction(
+                                              escalationId,
+                                              () =>
+                                                escalateEscalationCase(
+                                                  user!.email,
+                                                  escalationId,
+                                                  resolutionNotes[escalationId]?.trim() || undefined
+                                                ),
+                                              "Escalated to critical priority"
+                                            );
+                                          }}
+                                        >
+                                          <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
+                                          Escalate
+                                        </Button>
+                                      )}
+
+                                      {item.status === "RESOLVED" && (
+                                        <span className="text-xs text-emerald-600 font-medium flex items-center gap-1">
+                                          <CheckCircle2 className="h-3.5 w-3.5" />
+                                          Resolved
+                                        </span>
+                                      )}
                                     </div>
-                                  </div>
-                                </div>
-                              )}
 
-                              {/* Existing resolution note display */}
-                              {ticket.resolutionNote && (
-                                <div>
-                                  <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Resolution Note</h4>
-                                  <p className="text-sm bg-emerald-50 dark:bg-emerald-950/20 rounded-lg p-3 border border-emerald-200 dark:border-emerald-800">
-                                    {ticket.resolutionNote}
-                                  </p>
-                                </div>
-                              )}
-
-                              {/* SLA info for in_review */}
-                              {ticket.status === "in_review" && (
-                                <div className="flex items-center gap-2 px-3 py-2 bg-muted/50 rounded-lg border">
-                                  <Timer className={`h-4 w-4 ${slaTimeRemaining(ticket.inReviewSince, ticket.slaHours).urgent ? "text-destructive" : "text-muted-foreground"}`} />
-                                  <span className="text-xs text-muted-foreground">
-                                    SLA: Auto-resolves in <span className="font-medium">{slaTimeRemaining(ticket.inReviewSince, ticket.slaHours).label}</span> if employee doesn't respond
-                                  </span>
-                                </div>
-                              )}
-
-                              {/* Actions */}
-                              <div className="flex gap-2 pt-1">
-                                {!ticket.assignedTo && (
-                                  <Button size="sm" variant="outline" onClick={(e) => { e.stopPropagation(); assignTicketToMe(ticket.id, displayName); }}>
-                                    <UserPlus className="h-3.5 w-3.5 mr-1.5" /> Assign to me
-                                  </Button>
-                                )}
-                                {isAssignedToMe && !["in_review", "resolved"].includes(ticket.status) && (
-                                  <>
-                                    <Button
-                                      size="sm"
-                                      variant="outline"
-                                      onClick={(e) => { e.stopPropagation(); handleWorkOnThis(ticket.id); }}
-                                    >
-                                      <MessageSquare className="h-3.5 w-3.5 mr-1.5" /> Ask the Agent
-                                    </Button>
-                                    <Button
-                                      size="sm"
-                                      onClick={(e) => { e.stopPropagation(); handleMoveToReview(ticket.id); }}
-                                    >
-                                      <Eye className="h-3.5 w-3.5 mr-1.5" /> Move to In Review
-                                    </Button>
-                                  </>
-                                )}
-                                {isAssignedToMe && ticket.status === "in_review" && (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="gap-1.5 text-emerald-600 border-emerald-200 hover:bg-emerald-50"
-                                    onClick={(e) => { e.stopPropagation(); handleResolve(ticket.id); }}
-                                  >
-                                    <CheckCircle2 className="h-3.5 w-3.5" /> Mark as Resolved
-                                  </Button>
-                                )}
-                                {ticket.status === "resolved" && (
-                                  <span className="text-xs text-emerald-600 font-medium flex items-center gap-1">
-                                    <CheckCircle2 className="h-3.5 w-3.5" /> Resolved
-                                    {ticket.timeToResolve && ` · ${ticket.timeToResolve} min`}
-                                  </span>
-                                )}
-                              </div>
-                            </motion.div>
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      <FileText className="h-3.5 w-3.5 inline mr-1" />
+                                      Last update: {formatDateTime(item.updated_at)}
+                                    </div>
+                                  </motion.div>
+                                </TableCell>
+                              </TableRow>
+                            )}
+                          </Fragment>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </main>
 
-      <MyRequestsPanel isOpen={requestsOpen} onClose={() => setRequestsOpen(false)} requests={assignedRequests} onWorkOnRequest={handleWorkOnThis} />
+      <MyRequestsPanel
+        isOpen={requestsOpen}
+        onClose={() => setRequestsOpen(false)}
+        requests={assignedRequests}
+      />
     </div>
   );
 }

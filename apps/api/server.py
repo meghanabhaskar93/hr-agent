@@ -85,6 +85,9 @@ class EscalationCreateRequest(BaseModel):
 
     thread_id: str = Field(..., min_length=1, max_length=255)
     source_message_excerpt: str = Field(..., min_length=1, max_length=2000)
+    priority: str = Field(default="MEDIUM", min_length=1, max_length=16)
+    category: Optional[str] = Field(default=None, max_length=120)
+    agent_suggestion: Optional[str] = Field(default=None, max_length=4000)
 
 
 class EscalationTransitionRequest(BaseModel):
@@ -92,6 +95,36 @@ class EscalationTransitionRequest(BaseModel):
 
     new_status: str = Field(..., min_length=1, max_length=32)
     resolution_note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class EscalationAssignRequest(BaseModel):
+    """Assign or unassign an escalation request."""
+
+    assignee_email: Optional[str] = Field(default=None, max_length=255)
+
+
+class EscalationPriorityRequest(BaseModel):
+    """Change escalation priority."""
+
+    priority: str = Field(..., min_length=1, max_length=16)
+
+
+class EscalationMessageRequest(BaseModel):
+    """Message the original requester."""
+
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+class EscalationRequesterReplyRequest(BaseModel):
+    """Requester reply for an active escalation."""
+
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+class EscalationEscalateRequest(BaseModel):
+    """Escalate request severity."""
+
+    note: Optional[str] = Field(default=None, max_length=2000)
 
 
 class EscalationRecord(BaseModel):
@@ -107,6 +140,41 @@ class EscalationRecord(BaseModel):
     updated_at: str
     updated_by_employee_id: Optional[int] = None
     resolution_note: Optional[str] = None
+    priority: Optional[str] = None
+    category: Optional[str] = None
+    assigned_to_employee_id: Optional[int] = None
+    assigned_to_email: Optional[str] = None
+    assigned_to_name: Optional[str] = None
+    requester_name: Optional[str] = None
+    requester_department: Optional[str] = None
+    requester_title: Optional[str] = None
+    agent_suggestion: Optional[str] = None
+    last_message_to_requester: Optional[str] = None
+    last_message_at: Optional[str] = None
+    escalation_level: Optional[int] = None
+
+
+class EscalationTimelineEvent(BaseModel):
+    """Escalation timeline event payload."""
+
+    event_id: int
+    escalation_id: int
+    event_type: str
+    event_note: Optional[str] = None
+    actor_employee_id: Optional[int] = None
+    actor_email: Optional[str] = None
+    actor_name: Optional[str] = None
+    metadata_json: Optional[str] = None
+    created_at: str
+
+
+class EscalationDetailResponse(BaseModel):
+    """Escalation detail payload used by HR dashboard."""
+
+    request: EscalationRecord
+    timeline: list[EscalationTimelineEvent]
+    missing_fields: list[str]
+    completeness_percent: int
 
 
 class EscalationCounts(BaseModel):
@@ -274,6 +342,16 @@ def _get_status_code(exc: HRAgentError) -> int:
     elif isinstance(exc, ResourceNotFoundError):
         return 404
     return 500
+
+
+def _raise_escalation_http_error(message: str, default_status: int = 400) -> None:
+    """Map escalation service errors to HTTP errors."""
+    lowered = message.lower()
+    if "only hr/manager" in lowered or "only requester" in lowered:
+        raise HTTPException(status_code=403, detail=message)
+    if "not found" in lowered:
+        raise HTTPException(status_code=404, detail=message)
+    raise HTTPException(status_code=default_status, detail=message)
 
 
 # ============================================================================
@@ -506,10 +584,32 @@ async def list_escalations(
     escalation_service = get_escalation_service()
     rows = escalation_service.list_requests(
         viewer_email=user["user_email"],
-        status=status,
+        status=status.upper() if status else None,
         limit=limit,
     )
     return [EscalationRecord(**row) for row in rows]
+
+
+@app.get(
+    "/escalations/{escalation_id}/detail",
+    response_model=EscalationDetailResponse,
+    tags=["Escalations"],
+)
+async def get_escalation_detail(escalation_id: int, user: dict = Depends(get_current_user)):
+    """Get complete detail for one escalation request."""
+    escalation_service = get_escalation_service()
+    result = escalation_service.get_request_detail(
+        viewer_email=user["user_email"], escalation_id=escalation_id
+    )
+    if not result.get("success"):
+        message = result.get("error", "Failed to load escalation detail.")
+        _raise_escalation_http_error(message, default_status=404)
+    return EscalationDetailResponse(
+        request=EscalationRecord(**result["request"]),
+        timeline=[EscalationTimelineEvent(**event) for event in result["timeline"]],
+        missing_fields=result["missing_fields"],
+        completeness_percent=result["completeness_percent"],
+    )
 
 
 @app.get("/escalations/counts", response_model=EscalationCounts, tags=["Escalations"])
@@ -536,7 +636,13 @@ async def create_escalation(
         requester_email=user["user_email"],
         thread_id=request.thread_id,
         source_message_excerpt=request.source_message_excerpt,
+        priority=request.priority.upper(),
+        category=request.category,
+        agent_suggestion=request.agent_suggestion,
     )
+    if not result.get("success"):
+        message = result.get("error", "Failed to create escalation request.")
+        _raise_escalation_http_error(message)
     return EscalationActionResult(**result)
 
 
@@ -556,16 +662,133 @@ async def transition_escalation(
         viewer_email=user["user_email"],
         actor_employee_id=user["employee_id"],
         escalation_id=escalation_id,
-        new_status=request.new_status,
+        new_status=request.new_status.upper(),
         resolution_note=request.resolution_note,
     )
     if not result.get("success"):
         message = result.get("error", "Failed to transition escalation.")
-        if "Only HR/Manager" in message:
-            raise HTTPException(status_code=403, detail=message)
-        if "not found" in message.lower():
-            raise HTTPException(status_code=404, detail=message)
-        raise HTTPException(status_code=400, detail=message)
+        _raise_escalation_http_error(message)
+    return EscalationActionResult(**result)
+
+
+@app.post(
+    "/escalations/{escalation_id}/assign",
+    response_model=EscalationActionResult,
+    tags=["Escalations"],
+)
+async def assign_escalation(
+    escalation_id: int,
+    request: EscalationAssignRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Assign or unassign escalation request ownership."""
+    escalation_service = get_escalation_service()
+    assignee_email = request.assignee_email.strip().lower() if request.assignee_email else None
+    result = escalation_service.assign_request(
+        viewer_email=user["user_email"],
+        actor_employee_id=user["employee_id"],
+        escalation_id=escalation_id,
+        assignee_email=assignee_email,
+    )
+    if not result.get("success"):
+        message = result.get("error", "Failed to assign escalation.")
+        _raise_escalation_http_error(message)
+    return EscalationActionResult(**result)
+
+
+@app.post(
+    "/escalations/{escalation_id}/priority",
+    response_model=EscalationActionResult,
+    tags=["Escalations"],
+)
+async def change_escalation_priority(
+    escalation_id: int,
+    request: EscalationPriorityRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Change escalation priority."""
+    escalation_service = get_escalation_service()
+    result = escalation_service.update_priority(
+        viewer_email=user["user_email"],
+        actor_employee_id=user["employee_id"],
+        escalation_id=escalation_id,
+        priority=request.priority.upper(),
+    )
+    if not result.get("success"):
+        message = result.get("error", "Failed to update escalation priority.")
+        _raise_escalation_http_error(message)
+    return EscalationActionResult(**result)
+
+
+@app.post(
+    "/escalations/{escalation_id}/message",
+    response_model=EscalationActionResult,
+    tags=["Escalations"],
+)
+async def message_escalation_requester(
+    escalation_id: int,
+    request: EscalationMessageRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Record a message sent to the requester."""
+    escalation_service = get_escalation_service()
+    result = escalation_service.message_requester(
+        viewer_email=user["user_email"],
+        actor_employee_id=user["employee_id"],
+        escalation_id=escalation_id,
+        message=request.message,
+    )
+    if not result.get("success"):
+        message = result.get("error", "Failed to message requester.")
+        _raise_escalation_http_error(message)
+    return EscalationActionResult(**result)
+
+
+@app.post(
+    "/escalations/{escalation_id}/requester-reply",
+    response_model=EscalationActionResult,
+    tags=["Escalations"],
+)
+async def reply_to_escalation_as_requester(
+    escalation_id: int,
+    request: EscalationRequesterReplyRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Record requester reply to HR on an active escalation."""
+    escalation_service = get_escalation_service()
+    result = escalation_service.reply_as_requester(
+        viewer_email=user["user_email"],
+        actor_employee_id=user["employee_id"],
+        escalation_id=escalation_id,
+        message=request.message,
+    )
+    if not result.get("success"):
+        message = result.get("error", "Failed to record requester reply.")
+        _raise_escalation_http_error(message)
+    return EscalationActionResult(**result)
+
+
+@app.post(
+    "/escalations/{escalation_id}/escalate",
+    response_model=EscalationActionResult,
+    tags=["Escalations"],
+)
+async def escalate_escalation_request(
+    escalation_id: int,
+    request: EscalationEscalateRequest,
+    user: dict = Depends(get_current_user),
+):
+    """Escalate case severity and urgency."""
+    escalation_service = get_escalation_service()
+    result = escalation_service.escalate_request(
+        viewer_email=user["user_email"],
+        actor_employee_id=user["employee_id"],
+        escalation_id=escalation_id,
+        note=request.note,
+    )
+    if not result.get("success"):
+        message = result.get("error", "Failed to escalate request.")
+        _raise_escalation_http_error(message)
     return EscalationActionResult(**result)
 
 

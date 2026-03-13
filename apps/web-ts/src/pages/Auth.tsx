@@ -22,7 +22,7 @@ export default function Auth() {
   }
 
   if (session && role) {
-    return <Navigate to={role === "hr" ? "/hr-chat" : "/chat"} replace />;
+    return <Navigate to={role === "hr" ? "/hr-ops" : "/chat"} replace />;
   }
 
   const handleSubmit = async (e: React.FormEvent) => {

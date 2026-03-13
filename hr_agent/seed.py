@@ -2,6 +2,16 @@ from sqlalchemy import text
 from .utils.db import get_engine
 
 
+def _ensure_sqlite_column(con, table_name: str, column_name: str, ddl: str) -> None:
+    """Add a column for SQLite tables when upgrading existing local DBs."""
+    columns = {
+        row["name"]
+        for row in con.execute(text(f"PRAGMA table_info({table_name})")).mappings().all()
+    }
+    if column_name not in columns:
+        con.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {ddl}"))
+
+
 def seed_if_needed() -> None:
     eng = get_engine()
     with eng.begin() as con:
@@ -106,8 +116,66 @@ def seed_if_needed() -> None:
           created_at TEXT NOT NULL,
           updated_at TEXT NOT NULL,
           updated_by_employee_id INTEGER NULL,
-          resolution_note TEXT NULL
+          resolution_note TEXT NULL,
+          priority TEXT NOT NULL DEFAULT 'MEDIUM',
+          category TEXT NULL,
+          assigned_to_employee_id INTEGER NULL,
+          assigned_to_email TEXT NULL,
+          agent_suggestion TEXT NULL,
+          last_message_to_requester TEXT NULL,
+          last_message_at TEXT NULL,
+          escalation_level INTEGER NOT NULL DEFAULT 1
         );
+        """
+            )
+        )
+
+        con.execute(
+            text(
+                """
+        CREATE TABLE IF NOT EXISTS hr_escalation_event (
+          event_id INTEGER PRIMARY KEY,
+          escalation_id INTEGER NOT NULL,
+          event_type TEXT NOT NULL,
+          event_note TEXT NULL,
+          actor_employee_id INTEGER NULL,
+          actor_email TEXT NULL,
+          metadata_json TEXT NULL,
+          created_at TEXT NOT NULL
+        );
+        """
+            )
+        )
+
+        con.execute(
+            text(
+                """
+        CREATE INDEX IF NOT EXISTS idx_escalation_status_priority_updated
+          ON hr_escalation_request(status, priority, updated_at);
+        """
+            )
+        )
+        con.execute(
+            text(
+                """
+        CREATE INDEX IF NOT EXISTS idx_escalation_assignee_updated
+          ON hr_escalation_request(assigned_to_email, updated_at);
+        """
+            )
+        )
+        con.execute(
+            text(
+                """
+        CREATE INDEX IF NOT EXISTS idx_escalation_requester_updated
+          ON hr_escalation_request(requester_email, updated_at);
+        """
+            )
+        )
+        con.execute(
+            text(
+                """
+        CREATE INDEX IF NOT EXISTS idx_escalation_event_parent_created
+          ON hr_escalation_event(escalation_id, created_at);
         """
             )
         )
@@ -215,6 +283,39 @@ def seed_if_needed() -> None:
         );
         """
             )
+        )
+
+        # Migration-safe column upgrades for existing local DBs.
+        _ensure_sqlite_column(
+            con, "hr_escalation_request", "priority", "priority TEXT NOT NULL DEFAULT 'MEDIUM'"
+        )
+        _ensure_sqlite_column(con, "hr_escalation_request", "category", "category TEXT NULL")
+        _ensure_sqlite_column(
+            con,
+            "hr_escalation_request",
+            "assigned_to_employee_id",
+            "assigned_to_employee_id INTEGER NULL",
+        )
+        _ensure_sqlite_column(
+            con, "hr_escalation_request", "assigned_to_email", "assigned_to_email TEXT NULL"
+        )
+        _ensure_sqlite_column(
+            con, "hr_escalation_request", "agent_suggestion", "agent_suggestion TEXT NULL"
+        )
+        _ensure_sqlite_column(
+            con,
+            "hr_escalation_request",
+            "last_message_to_requester",
+            "last_message_to_requester TEXT NULL",
+        )
+        _ensure_sqlite_column(
+            con, "hr_escalation_request", "last_message_at", "last_message_at TEXT NULL"
+        )
+        _ensure_sqlite_column(
+            con,
+            "hr_escalation_request",
+            "escalation_level",
+            "escalation_level INTEGER NOT NULL DEFAULT 1",
         )
 
         existing = (

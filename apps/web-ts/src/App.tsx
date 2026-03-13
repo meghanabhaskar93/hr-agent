@@ -10,7 +10,6 @@ import Index from "./pages/Index";
 import Chat from "./pages/Chat";
 import HRChat from "./pages/HRChat";
 import HROps from "./pages/HROps";
-import HRQueue from "./pages/HRQueue";
 import AuditLog from "./pages/AuditLog";
 import Auth from "./pages/Auth";
 import NotFound from "./pages/NotFound";
@@ -21,7 +20,7 @@ function RequireEmployee({ children }: { children: JSX.Element }) {
   const { loading, session, role } = useAuth();
   if (loading) return null;
   if (!session) return <Navigate to="/auth" replace />;
-  if (role === "hr") return <Navigate to="/hr-chat" replace />;
+  if (role === "hr") return <Navigate to="/hr-ops" replace />;
   return children;
 }
 
@@ -72,7 +71,7 @@ const App = () => (
                 path="/hr-queue"
                 element={
                   <RequireHR>
-                    <HRQueue />
+                    <Navigate to="/hr-ops" replace />
                   </RequireHR>
                 }
               />

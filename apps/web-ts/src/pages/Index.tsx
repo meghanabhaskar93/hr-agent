@@ -10,9 +10,9 @@ export default function Index() {
     return <Navigate to="/auth" replace />;
   }
 
-  // HR users go to HR Chat, employees go to regular Chat
+  // HR users go to HR Ops dashboard, employees go to regular Chat
   if (role === "hr") {
-    return <Navigate to="/hr-chat" replace />;
+    return <Navigate to="/hr-ops" replace />;
   }
 
   return <Navigate to="/chat" replace />;

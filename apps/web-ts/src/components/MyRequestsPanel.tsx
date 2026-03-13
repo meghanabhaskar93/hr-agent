@@ -1,9 +1,10 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, ChevronDown, ChevronUp, FileText, MessageSquare, Bot, ArrowRight, Timer, CheckCircle2, Tag } from "lucide-react";
+import { X, ChevronDown, ChevronUp, FileText, MessageSquare, ArrowRight, Timer, CheckCircle2, Tag } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import type { ResolutionTag } from "@/contexts/HRTicketsContext";
 import { resolutionTagConfig } from "@/contexts/HRTicketsContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -74,14 +75,23 @@ interface MyRequestsPanelProps {
   onClose: () => void;
   requests: EscalatedRequest[];
   onWorkOnRequest?: (requestId: string) => void;
+  onReplyToRequest?: (requestId: string, message: string) => Promise<void> | void;
 }
 
-export default function MyRequestsPanel({ isOpen, onClose, requests, onWorkOnRequest }: MyRequestsPanelProps) {
+export default function MyRequestsPanel({
+  isOpen,
+  onClose,
+  requests,
+  onWorkOnRequest,
+  onReplyToRequest,
+}: MyRequestsPanelProps) {
   const { role } = useAuth();
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<FilterTab>("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showAiResponseId, setShowAiResponseId] = useState<string | null>(null);
+  const [replyDraftById, setReplyDraftById] = useState<Record<string, string>>({});
+  const [replyingId, setReplyingId] = useState<string | null>(null);
   const canWorkOnRequests = role === "hr";
 
   const handleWorkOn = (reqId: string) => {
@@ -102,6 +112,19 @@ export default function MyRequestsPanel({ isOpen, onClose, requests, onWorkOnReq
   const filtered = activeTab === "all"
     ? requests
     : requests.filter((r) => r.status === activeTab);
+
+  const handleReply = async (requestId: string) => {
+    if (!onReplyToRequest || canWorkOnRequests) return;
+    const message = (replyDraftById[requestId] || "").trim();
+    if (!message) return;
+    setReplyingId(requestId);
+    try {
+      await onReplyToRequest(requestId, message);
+      setReplyDraftById((prev) => ({ ...prev, [requestId]: "" }));
+    } finally {
+      setReplyingId(null);
+    }
+  };
 
   const tabs: { key: FilterTab; label: string }[] = [
     { key: "all", label: "All" },
@@ -262,7 +285,7 @@ export default function MyRequestsPanel({ isOpen, onClose, requests, onWorkOnReq
                             </p>
                           </div>
 
-                          {/* View AI Response toggle */}
+                          {/* View latest update toggle */}
                           <button
                             onClick={() => setShowAiResponseId(showAi ? null : req.id)}
                             className="flex items-center gap-1.5 text-[10px] font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors w-full"
@@ -272,7 +295,7 @@ export default function MyRequestsPanel({ isOpen, onClose, requests, onWorkOnReq
                             ) : (
                               <ChevronDown className="h-3.5 w-3.5" />
                             )}
-                            View AI Response
+                            View Latest Update
                           </button>
 
                           {showAi && (
@@ -284,9 +307,9 @@ export default function MyRequestsPanel({ isOpen, onClose, requests, onWorkOnReq
                             >
                               <div className="border rounded-lg p-3 bg-muted/30">
                                 <div className="flex items-center gap-1.5 mb-2">
-                                  <Bot className="h-3.5 w-3.5 text-primary" />
+                                  <MessageSquare className="h-3.5 w-3.5 text-primary" />
                                   <span className="text-[10px] font-semibold text-primary uppercase tracking-wider">
-                                    AI Response
+                                    Latest Update
                                   </span>
                                 </div>
                                 <p className="text-sm leading-relaxed text-foreground whitespace-pre-wrap">
@@ -294,6 +317,37 @@ export default function MyRequestsPanel({ isOpen, onClose, requests, onWorkOnReq
                                 </p>
                               </div>
                             </motion.div>
+                          )}
+
+                          {!canWorkOnRequests && req.status !== "resolved" && (
+                            <div className="space-y-2">
+                              <p className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
+                                Reply to HR
+                              </p>
+                              <Textarea
+                                value={replyDraftById[req.id] || ""}
+                                onChange={(e) =>
+                                  setReplyDraftById((prev) => ({
+                                    ...prev,
+                                    [req.id]: e.target.value,
+                                  }))
+                                }
+                                placeholder="Add clarification for HR..."
+                                className="min-h-[80px] text-sm"
+                              />
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="w-full"
+                                disabled={
+                                  replyingId === req.id ||
+                                  !(replyDraftById[req.id] || "").trim()
+                                }
+                                onClick={() => void handleReply(req.id)}
+                              >
+                                {replyingId === req.id ? "Sending..." : "Send reply"}
+                              </Button>
+                            </div>
                           )}
 
                           {/* Audit Log */}

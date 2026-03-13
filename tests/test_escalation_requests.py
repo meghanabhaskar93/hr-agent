@@ -19,15 +19,46 @@ class _TestEscalationRepository(EscalationRepository):
 class _FakeEmployeeRepo:
     def __init__(self, role_by_email: dict[str, str]):
         self.role_by_email = role_by_email
+        self.employee_by_email = {
+            "alex.kim@acme.com": {"employee_id": 201, "email": "alex.kim@acme.com"},
+            "victoria.adams@acme.com": {
+                "employee_id": 101,
+                "email": "victoria.adams@acme.com",
+            },
+            "amanda.foster@acme.com": {
+                "employee_id": 103,
+                "email": "amanda.foster@acme.com",
+            },
+            "james.wilson@acme.com": {
+                "employee_id": 112,
+                "email": "james.wilson@acme.com",
+            },
+        }
 
     def get_role_by_email(self, email: str) -> str:
         return self.role_by_email.get(email, "EMPLOYEE")
+
+    def get_by_email(self, email: str):
+        return self.employee_by_email.get(email)
 
 
 def _build_engine(tmp_path: Path):
     db_path = tmp_path / "escalation_test.db"
     engine = create_engine(f"sqlite:///{db_path}", future=True)
     with engine.begin() as con:
+        con.execute(
+            text(
+                """
+                CREATE TABLE employee (
+                    employee_id INTEGER PRIMARY KEY,
+                    preferred_name TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    department TEXT NOT NULL,
+                    title TEXT NOT NULL
+                )
+                """
+            )
+        )
         con.execute(
             text(
                 """
@@ -41,8 +72,43 @@ def _build_engine(tmp_path: Path):
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     updated_by_employee_id INTEGER NULL,
-                    resolution_note TEXT NULL
+                    resolution_note TEXT NULL,
+                    priority TEXT NOT NULL DEFAULT 'MEDIUM',
+                    category TEXT NULL,
+                    assigned_to_employee_id INTEGER NULL,
+                    assigned_to_email TEXT NULL,
+                    agent_suggestion TEXT NULL,
+                    last_message_to_requester TEXT NULL,
+                    last_message_at TEXT NULL,
+                    escalation_level INTEGER NOT NULL DEFAULT 1
                 )
+                """
+            )
+        )
+        con.execute(
+            text(
+                """
+                CREATE TABLE hr_escalation_event (
+                    event_id INTEGER PRIMARY KEY,
+                    escalation_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_note TEXT NULL,
+                    actor_employee_id INTEGER NULL,
+                    actor_email TEXT NULL,
+                    metadata_json TEXT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+        )
+        con.execute(
+            text(
+                """
+                INSERT INTO employee VALUES
+                (101, 'Victoria', 'victoria.adams@acme.com', 'Executive', 'COO'),
+                (103, 'Amanda', 'amanda.foster@acme.com', 'Executive', 'CTO'),
+                (112, 'James', 'james.wilson@acme.com', 'HR', 'HR Lead'),
+                (201, 'Alex', 'alex.kim@acme.com', 'Engineering', 'Engineer')
                 """
             )
         )
@@ -57,10 +123,13 @@ def test_escalation_repository_create_list_counts_and_transition(tmp_path: Path)
         requester_email="alex.kim@acme.com",
         thread_id="thread-a",
         source_message_excerpt="Need HR support for a policy conflict.",
+        priority="HIGH",
+        category="Policy",
+        agent_suggestion="Check policy exception process.",
     )
     second_id = repo.create(
-        requester_employee_id=202,
-        requester_email="sam.lee@acme.com",
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
         thread_id="thread-b",
         source_message_excerpt="Escalate payroll discrepancy.",
     )
@@ -71,8 +140,8 @@ def test_escalation_repository_create_list_counts_and_transition(tmp_path: Path)
     assert len(all_rows) == 2
 
     alex_rows = repo.list_for_requester("alex.kim@acme.com")
-    assert len(alex_rows) == 1
-    assert alex_rows[0]["thread_id"] == "thread-a"
+    assert len(alex_rows) == 2
+    assert alex_rows[0]["requester_name"] == "Alex"
 
     counts_all = repo.list_counts_for_requester()
     assert counts_all == {"total": 2, "pending": 2, "in_review": 0, "resolved": 0}
@@ -85,14 +154,27 @@ def test_escalation_repository_create_list_counts_and_transition(tmp_path: Path)
     assert updated["status"] == "IN_REVIEW"
     assert updated["updated_by_employee_id"] == 999
 
+    event_id = repo.add_event(
+        escalation_id=first_id,
+        event_type="STATUS_CHANGED",
+        actor_employee_id=999,
+        actor_email="amanda.foster@acme.com",
+        event_note="Moved to in review.",
+    )
+    assert event_id > 0
+    events = repo.list_events(first_id)
+    assert len(events) == 1
+    assert events[0]["event_type"] == "STATUS_CHANGED"
 
-def test_escalation_service_permissions_and_transitions(tmp_path: Path):
+
+def test_escalation_service_permissions_actions_and_transitions(tmp_path: Path):
     repo = _TestEscalationRepository(_build_engine(tmp_path))
     escalation_id = repo.create(
         requester_employee_id=201,
         requester_email="alex.kim@acme.com",
         thread_id="thread-a",
         source_message_excerpt="Need a manual HR follow-up.",
+        category="Leave",
     )
 
     service = EscalationService()
@@ -102,16 +184,58 @@ def test_escalation_service_permissions_and_transitions(tmp_path: Path):
             "alex.kim@acme.com": "EMPLOYEE",
             "victoria.adams@acme.com": "MANAGER",
             "amanda.foster@acme.com": "HR",
+            "james.wilson@acme.com": "HR",
         }
     )
 
-    denied = service.transition_status(
+    denied = service.assign_request(
         viewer_email="alex.kim@acme.com",
         actor_employee_id=201,
         escalation_id=escalation_id,
-        new_status="IN_REVIEW",
+        assignee_email="james.wilson@acme.com",
     )
     assert denied["success"] is False
+
+    assigned = service.assign_request(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        assignee_email="james.wilson@acme.com",
+    )
+    assert assigned["success"] is True
+
+    priority = service.update_priority(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        priority="CRITICAL",
+    )
+    assert priority["success"] is True
+
+    messaged = service.message_requester(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        message="Can you share additional context?",
+    )
+    assert messaged["success"] is True
+
+    denied_reply = service.reply_as_requester(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        message="This should not pass as HR.",
+    )
+    assert denied_reply["success"] is False
+    assert "Only requester" in denied_reply["error"]
+
+    replied = service.reply_as_requester(
+        viewer_email="alex.kim@acme.com",
+        actor_employee_id=201,
+        escalation_id=escalation_id,
+        message="Sure. I was referring to the March payroll cycle.",
+    )
+    assert replied["success"] is True
 
     invalid = service.transition_status(
         viewer_email="victoria.adams@acme.com",
@@ -122,13 +246,13 @@ def test_escalation_service_permissions_and_transitions(tmp_path: Path):
     assert invalid["success"] is False
     assert "Invalid transition" in invalid["error"]
 
-    in_review = service.transition_status(
-        viewer_email="amanda.foster@acme.com",
-        actor_employee_id=103,
+    escalated = service.escalate_request(
+        viewer_email="victoria.adams@acme.com",
+        actor_employee_id=101,
         escalation_id=escalation_id,
-        new_status="IN_REVIEW",
+        note="Urgent handling required.",
     )
-    assert in_review["success"] is True
+    assert escalated["success"] is True
 
     resolved = service.transition_status(
         viewer_email="amanda.foster@acme.com",
@@ -138,9 +262,19 @@ def test_escalation_service_permissions_and_transitions(tmp_path: Path):
     )
     assert resolved["success"] is True
 
+    detail = service.get_request_detail(
+        viewer_email="amanda.foster@acme.com", escalation_id=escalation_id
+    )
+    assert detail["success"] is True
+    assert detail["completeness_percent"] >= 75
+    assert len(detail["timeline"]) >= 5
+    assert any(event["event_type"] == "REQUESTER_REPLY" for event in detail["timeline"])
+
     row = repo.get_by_id(escalation_id)
     assert row is not None
     assert row["status"] == "RESOLVED"
+    assert row["assigned_to_email"] == "james.wilson@acme.com"
+    assert row["priority"] == "CRITICAL"
 
     manager_view = service.list_requests("victoria.adams@acme.com")
     assert len(manager_view) == 1
