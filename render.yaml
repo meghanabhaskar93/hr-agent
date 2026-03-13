@@ -17,7 +17,7 @@ services:
       - key: LLM_MODEL
         value: databricks-qwen3-next-80b-a3b-instruct
       - key: ALLOWED_TEST_USER_EMAILS
-        value: amanda.foster@acme.com,jordan.lee@acme.com,alex.kim@acme.com
+        value: ""
       - key: LANGFUSE_ENABLED
         value: "false"
   - type: web
