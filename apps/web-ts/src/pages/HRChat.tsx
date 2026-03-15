@@ -34,6 +34,7 @@ interface Message {
 }
 
 const NEW_CONVERSATION_LABEL = "New conversation";
+const DRAFT_CONVERSATION_ID = "__draft__";
 
 function buildConversationPreview(text: string): string {
   const cleaned = text.replace(/\s+/g, " ").trim();
@@ -193,7 +194,6 @@ export default function HRChat() {
   const [conversationMessages, setConversationMessages] = useState<Record<string, Message[]>>({});
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const [isCreatingConversation, setIsCreatingConversation] = useState(false);
   const [requestsOpen, setRequestsOpen] = useState(false);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -207,6 +207,20 @@ export default function HRChat() {
   const capitalizedName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
   const assignedTickets = getAssignedTickets(displayName);
   const assignedRequests = getAssignedRequests(displayName);
+
+  const openDraftConversation = useCallback(() => {
+    if (activeConversation && messages.length > 0) {
+      setConversationMessages((cm) => ({ ...cm, [activeConversation]: messages }));
+    }
+    setConversations((prev) => [
+      { id: DRAFT_CONVERSATION_ID, preview: NEW_CONVERSATION_LABEL, timestamp: new Date() },
+      ...prev.filter((item) => item.id !== DRAFT_CONVERSATION_ID),
+    ]);
+    setConversationMessages((cm) => ({ ...cm, [DRAFT_CONVERSATION_ID]: [] }));
+    setMessages([]);
+    setActiveConversation(DRAFT_CONVERSATION_ID);
+    setInput("");
+  }, [activeConversation, messages]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -226,20 +240,34 @@ export default function HRChat() {
         const sessions = await fetchSessions(user.email);
         if (cancelled) return;
 
-        setConversations(
-          sessions
-            .map((session) => ({
-              id: session.session_id,
-              preview:
-                storedTitles[session.session_id] ||
-                session.title ||
-                (session.turn_count > 0
-                  ? `Conversation ${new Date(session.created_at).toLocaleDateString()}`
-                  : NEW_CONVERSATION_LABEL),
-              timestamp: new Date(session.created_at),
-            }))
-            .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-        );
+        const loadedConversations = sessions
+          .filter((session) => session.turn_count > 0)
+          .map((session) => ({
+            id: session.session_id,
+            preview:
+              storedTitles[session.session_id] ||
+              session.title ||
+              (session.turn_count > 0
+                ? `Conversation ${new Date(session.created_at).toLocaleDateString()}`
+                : NEW_CONVERSATION_LABEL),
+            timestamp: new Date(session.created_at),
+          }))
+          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+        setConversations((prev) => {
+          const draftConversation = prev.find(
+            (conversation) => conversation.id === DRAFT_CONVERSATION_ID
+          );
+          if (!draftConversation) {
+            return loadedConversations;
+          }
+          return [
+            draftConversation,
+            ...loadedConversations.filter(
+              (conversation) => conversation.id !== DRAFT_CONVERSATION_ID
+            ),
+          ];
+        });
       } catch (error: any) {
         toast.error(error?.message || "Failed to load HR conversations");
       }
@@ -250,6 +278,16 @@ export default function HRChat() {
       cancelled = true;
     };
   }, [user?.email]);
+
+  useEffect(() => {
+    const shouldOpenNewConversation = searchParams.get("new") === "1";
+    const ticketId = searchParams.get("ticket");
+    if (!shouldOpenNewConversation || ticketId) return;
+
+    openDraftConversation();
+    setActiveTicketId(null);
+    setSearchParams({}, { replace: true });
+  }, [openDraftConversation, searchParams, setSearchParams]);
 
   // Handle deep-link from HR Ops with ?ticket=ID
   useEffect(() => {
@@ -288,7 +326,8 @@ export default function HRChat() {
     if (!msg || !user?.email) return;
 
     let convId = convIdOverride || activeConversation;
-    if (!convId) {
+    const usingDraftConversation = !convIdOverride && convId === DRAFT_CONVERSATION_ID;
+    if (!convId || usingDraftConversation) {
       try {
         const sessionInfo = await createSession(user.email);
         convId = sessionInfo.session_id;
@@ -304,8 +343,9 @@ export default function HRChat() {
 
     // Check if conversation already exists
     setConversations((prev) => {
-      if (prev.find((c) => c.id === convId)) {
-        return prev.map((c) =>
+      const withoutDraft = prev.filter((c) => c.id !== DRAFT_CONVERSATION_ID);
+      if (withoutDraft.find((c) => c.id === convId)) {
+        return withoutDraft.map((c) =>
           c.id === convId
             ? {
                 ...c,
@@ -315,9 +355,15 @@ export default function HRChat() {
             : c
         );
       }
-      return [{ id: convId, preview: displayPreview, timestamp: new Date() }, ...prev];
+      return [{ id: convId, preview: displayPreview, timestamp: new Date() }, ...withoutDraft];
     });
-    setConversationMessages((cm) => ({ ...cm, [convId]: cm[convId] || [] }));
+    setConversationMessages((cm) => {
+      const next = { ...cm, [convId]: cm[convId] || [] };
+      if (usingDraftConversation) {
+        delete next[DRAFT_CONVERSATION_ID];
+      }
+      return next;
+    });
     setActiveConversation(convId);
 
     const userMsg: Message = { id: Date.now().toString(), role: "user", content: msg, timestamp: new Date() };
@@ -381,7 +427,8 @@ export default function HRChat() {
     if (!msg || isTyping || !user?.email) return;
 
     let convId = activeConversation;
-    if (!convId) {
+    const usingDraftConversation = convId === DRAFT_CONVERSATION_ID;
+    if (!convId || usingDraftConversation) {
       try {
         const sessionInfo = await createSession(user.email);
         convId = sessionInfo.session_id;
@@ -389,11 +436,18 @@ export default function HRChat() {
         toast.error(error?.message || "Failed to create conversation");
         return;
       }
-      setConversations((prev) => [
-        { id: convId!, preview: NEW_CONVERSATION_LABEL, timestamp: new Date() },
-        ...prev,
-      ]);
-      setConversationMessages((cm) => ({ ...cm, [convId!]: [] }));
+      setConversations((prev) => {
+        const withoutDraft = prev.filter((item) => item.id !== DRAFT_CONVERSATION_ID);
+        const withoutDuplicate = withoutDraft.filter((item) => item.id !== convId);
+        return [{ id: convId!, preview: NEW_CONVERSATION_LABEL, timestamp: new Date() }, ...withoutDuplicate];
+      });
+      setConversationMessages((cm) => {
+        const next = { ...cm, [convId!]: cm[convId!] || [] };
+        if (usingDraftConversation) {
+          delete next[DRAFT_CONVERSATION_ID];
+        }
+        return next;
+      });
       setActiveConversation(convId);
     }
     const preview = buildConversationPreview(msg);
@@ -500,33 +554,26 @@ export default function HRChat() {
     })();
   };
 
-  const handleNewConversation = async () => {
-    if (!user?.email || isCreatingConversation) return;
-    if (activeConversation && messages.length > 0) {
-      setConversationMessages((cm) => ({ ...cm, [activeConversation]: messages }));
-    }
-
-    setIsCreatingConversation(true);
-    try {
-      const sessionInfo = await createSession(user.email);
-      const newId = sessionInfo.session_id;
-      setConversations((prev) => [
-        { id: newId, preview: NEW_CONVERSATION_LABEL, timestamp: new Date(sessionInfo.created_at) },
-        ...prev.filter((item) => item.id !== newId),
-      ]);
-      setConversationMessages((cm) => ({ ...cm, [newId]: [] }));
-      setMessages([]);
-      setActiveConversation(newId);
-      setActiveTicketId(null);
-      setInput("");
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to create a new conversation");
-    } finally {
-      setIsCreatingConversation(false);
-    }
+  const handleNewConversation = () => {
+    openDraftConversation();
+    setActiveTicketId(null);
   };
 
   const handleDeleteConversation = async (id: string) => {
+    if (id === DRAFT_CONVERSATION_ID) {
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      setConversationMessages((cm) => {
+        const next = { ...cm };
+        delete next[id];
+        return next;
+      });
+      if (activeConversation === id) {
+        setMessages([]);
+        setActiveConversation(null);
+        setActiveTicketId(null);
+      }
+      return;
+    }
     if (!user?.email) return;
     try {
       await deleteSession(user.email, id);
@@ -551,7 +598,9 @@ export default function HRChat() {
 
   const handleClearAll = async () => {
     if (!user?.email) return;
-    const ids = conversations.map((conversation) => conversation.id);
+    const ids = conversations
+      .filter((conversation) => conversation.id !== DRAFT_CONVERSATION_ID)
+      .map((conversation) => conversation.id);
     if (ids.length === 0) {
       clearConversationTitles(user.email);
       setConversations([]);

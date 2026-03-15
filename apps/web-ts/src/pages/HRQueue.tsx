@@ -123,7 +123,7 @@ export default function HRQueue() {
         activeConversationId={activeConversation}
         conversations={[]}
         onSelectConversation={setActiveConversation}
-        onNewConversation={() => navigate("/hr-chat")}
+        onNewConversation={() => navigate("/hr-chat?new=1")}
         onDeleteConversation={() => {}}
         onClearAll={() => {}}
       />

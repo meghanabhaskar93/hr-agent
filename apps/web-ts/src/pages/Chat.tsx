@@ -54,6 +54,7 @@ function mapTurnsToMessages(turns: BackendSessionTurn[]): Message[] {
 }
 
 const NEW_CONVERSATION_LABEL = "New conversation";
+const DRAFT_CONVERSATION_ID = "__draft__";
 
 function buildConversationTitleFromMessage(text: string): string {
   const cleaned = text.replace(/\s+/g, " ").trim();
@@ -259,7 +260,6 @@ export default function ChatPage() {
   >({});
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
-  const [isCreatingConversation, setIsCreatingConversation] = useState(false);
   const [requestsOpen, setRequestsOpen] = useState(false);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [escalatedRequests, setEscalatedRequests] = useState<EscalatedRequest[]>([]);
@@ -303,20 +303,34 @@ export default function ChatPage() {
 
         if (cancelled) return;
 
-        setConversations(
-          sessions
-            .map((session) => ({
-              id: session.session_id,
-              preview:
-                storedTitles[session.session_id] ||
-                session.title ||
-                (session.turn_count > 0
-                  ? `Conversation ${new Date(session.created_at).toLocaleDateString()}`
-                  : NEW_CONVERSATION_LABEL),
-              timestamp: new Date(session.created_at),
-            }))
-            .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-        );
+        const loadedConversations = sessions
+          .filter((session) => session.turn_count > 0)
+          .map((session) => ({
+            id: session.session_id,
+            preview:
+              storedTitles[session.session_id] ||
+              session.title ||
+              (session.turn_count > 0
+                ? `Conversation ${new Date(session.created_at).toLocaleDateString()}`
+                : NEW_CONVERSATION_LABEL),
+            timestamp: new Date(session.created_at),
+          }))
+          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+        setConversations((prev) => {
+          const draftConversation = prev.find(
+            (conversation) => conversation.id === DRAFT_CONVERSATION_ID
+          );
+          if (!draftConversation) {
+            return loadedConversations;
+          }
+          return [
+            draftConversation,
+            ...loadedConversations.filter(
+              (conversation) => conversation.id !== DRAFT_CONVERSATION_ID
+            ),
+          ];
+        });
 
         await loadEscalatedRequests();
       } catch (error) {
@@ -397,16 +411,28 @@ export default function ChatPage() {
     if (!msg || isTyping || !user?.email) return;
 
     let convId = activeConversation;
-    if (!convId) {
+    const usingDraftConversation = convId === DRAFT_CONVERSATION_ID;
+    if (!convId || usingDraftConversation) {
       try {
         const sessionInfo = await createSession(user.email);
         convId = sessionInfo.session_id;
         const preview = buildConversationTitleFromMessage(msg);
         saveConversationTitleIfMissing(user.email, convId, preview);
-        setConversations((prev) => [
-          { id: convId!, preview, timestamp: new Date(sessionInfo.created_at) },
-          ...prev,
-        ]);
+        setConversations((prev) => {
+          const withoutDraft = prev.filter((item) => item.id !== DRAFT_CONVERSATION_ID);
+          const withoutDuplicate = withoutDraft.filter((item) => item.id !== convId);
+          return [
+            { id: convId!, preview, timestamp: new Date(sessionInfo.created_at) },
+            ...withoutDuplicate,
+          ];
+        });
+        setConversationMessages((prev) => {
+          const next = { ...prev };
+          if (usingDraftConversation) {
+            delete next[DRAFT_CONVERSATION_ID];
+          }
+          return next;
+        });
         setActiveConversation(convId);
       } catch (error: any) {
         toast.error(error?.message || "Failed to create session");
@@ -504,41 +530,41 @@ export default function ChatPage() {
     })();
   };
 
-  const handleNewConversation = async () => {
-    if (!user?.email || isCreatingConversation) return;
-
+  const handleNewConversation = () => {
     if (activeConversation && messages.length > 0) {
       setConversationMessages((prev) => ({
         ...prev,
         [activeConversation]: messages,
       }));
     }
-
-    setIsCreatingConversation(true);
-    try {
-      const sessionInfo = await createSession(user.email);
-      const newId = sessionInfo.session_id;
-
-      setConversations((prev) => [
-        {
-          id: newId,
-          preview: NEW_CONVERSATION_LABEL,
-          timestamp: new Date(sessionInfo.created_at),
-        },
-        ...prev.filter((item) => item.id !== newId),
-      ]);
-      setConversationMessages((prev) => ({ ...prev, [newId]: [] }));
-      setMessages([]);
-      setInput("");
-      setActiveConversation(newId);
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to create a new conversation");
-    } finally {
-      setIsCreatingConversation(false);
-    }
+    setConversations((prev) => [
+      {
+        id: DRAFT_CONVERSATION_ID,
+        preview: NEW_CONVERSATION_LABEL,
+        timestamp: new Date(),
+      },
+      ...prev.filter((item) => item.id !== DRAFT_CONVERSATION_ID),
+    ]);
+    setConversationMessages((prev) => ({ ...prev, [DRAFT_CONVERSATION_ID]: [] }));
+    setMessages([]);
+    setInput("");
+    setActiveConversation(DRAFT_CONVERSATION_ID);
   };
 
   const handleDeleteConversation = async (id: string) => {
+    if (id === DRAFT_CONVERSATION_ID) {
+      setConversations((prev) => prev.filter((c) => c.id !== id));
+      setConversationMessages((prev) => {
+        const next = { ...prev };
+        delete next[id];
+        return next;
+      });
+      if (activeConversation === id) {
+        setMessages([]);
+        setActiveConversation(null);
+      }
+      return;
+    }
     if (!user?.email) return;
 
     try {
@@ -565,7 +591,9 @@ export default function ChatPage() {
     if (!user?.email) return;
     const userEmail = user.email;
 
-    const ids = conversations.map((conversation) => conversation.id);
+    const ids = conversations
+      .filter((conversation) => conversation.id !== DRAFT_CONVERSATION_ID)
+      .map((conversation) => conversation.id);
     if (ids.length === 0) {
       clearConversationTitles(userEmail);
       setConversations([]);

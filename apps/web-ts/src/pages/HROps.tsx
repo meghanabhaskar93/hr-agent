@@ -484,6 +484,7 @@ export default function HROps() {
         if (cancelled) return;
         setConversations(
           sessions
+            .filter((session) => session.turn_count > 0)
             .map((session) => ({
               id: session.session_id,
               preview: toSessionPreview(session),
@@ -628,7 +629,7 @@ export default function HROps() {
           setActiveConversation(id);
           navigate("/hr-chat");
         }}
-        onNewConversation={() => navigate("/hr-chat")}
+        onNewConversation={() => navigate("/hr-chat?new=1")}
         onDeleteConversation={(id) => {
           setConversations((prev) => prev.filter((c) => c.id !== id));
           if (activeConversation === id) setActiveConversation(null);
