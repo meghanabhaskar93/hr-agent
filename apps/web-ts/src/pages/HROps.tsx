@@ -302,6 +302,44 @@ function formatDateTime(iso: string | null | undefined): string {
   return d.toLocaleString();
 }
 
+function hrRequestViewsStorageKey(userEmail: string): string {
+  return `pinghr:hr-request-views:${userEmail.toLowerCase()}`;
+}
+
+function loadHRRequestViews(userEmail: string): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(hrRequestViewsStorageKey(userEmail));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    const cleaned: Record<string, number> = {};
+    for (const [requestId, value] of Object.entries(parsed)) {
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        cleaned[requestId] = value;
+      }
+    }
+    return cleaned;
+  } catch {
+    return {};
+  }
+}
+
+function saveHRRequestViews(userEmail: string, viewsByRequestId: Record<string, number>): void {
+  try {
+    localStorage.setItem(
+      hrRequestViewsStorageKey(userEmail),
+      JSON.stringify(viewsByRequestId)
+    );
+  } catch {
+    // Ignore storage errors and keep UI usable.
+  }
+}
+
+function requestUpdateTimestampMs(request: EscalatedRequest): number {
+  const timestamp = (request.lastUpdatedAt || request.timestamp).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 export function toPanelRequestStatus(
   status: BackendHRRequest["status"],
   assigneeUserId?: string | null
@@ -350,6 +388,7 @@ function toMyRequest(
     priority: panelPriority,
     category: `${item.type} / ${item.subtype}`,
     timestamp: new Date(item.created_at),
+    lastUpdatedAt: new Date(item.updated_at),
     auditLog:
       detail?.timeline?.map((event) => ({
         label: event.event_note || event.event_type.replace(/_/g, " "),
@@ -376,6 +415,7 @@ export default function HROps() {
   const [detailById, setDetailById] = useState<Record<number, BackendHRRequestDetail>>({});
   const [messageDraft, setMessageDraft] = useState<Record<number, string>>({});
   const [resolutionNotes, setResolutionNotes] = useState<Record<number, string>>({});
+  const [viewedRequestById, setViewedRequestById] = useState<Record<string, number>>({});
 
   const currentUserEmail = user?.email?.toLowerCase() || "";
 
@@ -424,6 +464,14 @@ export default function HROps() {
     return () => {
       cancelled = true;
     };
+  }, [user?.email]);
+
+  useEffect(() => {
+    if (!user?.email) {
+      setViewedRequestById({});
+      return;
+    }
+    setViewedRequestById(loadHRRequestViews(user.email));
   }, [user?.email]);
 
   useEffect(() => {
@@ -549,6 +597,27 @@ export default function HROps() {
   const assignedRequests = sortHRQueue(assignedToMeAll).map((item) =>
     toMyRequest(item, detailById[item.request_id] || null)
   );
+  const unreadAssignedRequestCount = assignedRequests.reduce((count, request) => {
+    const viewedAt = viewedRequestById[request.id] ?? 0;
+    return requestUpdateTimestampMs(request) > viewedAt ? count + 1 : count;
+  }, 0);
+
+  const handleRequestViewed = useCallback(
+    (request: EscalatedRequest) => {
+      const userEmail = user?.email;
+      if (!userEmail) return;
+      const viewedAt = requestUpdateTimestampMs(request);
+      if (viewedAt <= 0) return;
+
+      setViewedRequestById((prev) => {
+        if ((prev[request.id] ?? 0) >= viewedAt) return prev;
+        const next = { ...prev, [request.id]: viewedAt };
+        saveHRRequestViews(userEmail, next);
+        return next;
+      });
+    },
+    [user?.email]
+  );
 
   return (
     <div className="min-h-screen flex w-full">
@@ -585,9 +654,9 @@ export default function HROps() {
           >
             <Mail className="h-4 w-4" />
             My Requests
-            {assignedToMeAll.length > 0 && (
+            {unreadAssignedRequestCount > 0 && (
               <span className="ml-1 h-5 min-w-5 px-1 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold flex items-center justify-center">
-                {assignedToMeAll.length}
+                {unreadAssignedRequestCount}
               </span>
             )}
           </Button>
@@ -1200,6 +1269,7 @@ export default function HROps() {
         isOpen={requestsOpen}
         onClose={() => setRequestsOpen(false)}
         requests={assignedRequests}
+        onRequestViewed={handleRequestViewed}
       />
     </div>
   );

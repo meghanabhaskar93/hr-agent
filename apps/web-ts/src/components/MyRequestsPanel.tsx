@@ -25,6 +25,7 @@ export interface EscalatedRequest {
   priority: "critical" | "high" | "medium";
   category: string;
   timestamp: Date;
+  lastUpdatedAt?: Date;
   auditLog: AuditEvent[];
   resolutionTag?: ResolutionTag;
 }
@@ -76,6 +77,7 @@ interface MyRequestsPanelProps {
   requests: EscalatedRequest[];
   onWorkOnRequest?: (requestId: string) => void;
   onReplyToRequest?: (requestId: string, message: string) => Promise<void> | void;
+  onRequestViewed?: (request: EscalatedRequest) => void;
 }
 
 function isActiveStatus(status: RequestStatus): boolean {
@@ -88,6 +90,7 @@ export default function MyRequestsPanel({
   requests,
   onWorkOnRequest,
   onReplyToRequest,
+  onRequestViewed,
 }: MyRequestsPanelProps) {
   const { role } = useAuth();
   const navigate = useNavigate();
@@ -257,9 +260,12 @@ export default function MyRequestsPanel({
                       </div>
                       <button
                         onClick={() => {
-                          setExpandedId(isExpanded ? null : req.id);
+                          const shouldExpand = !isExpanded;
+                          setExpandedId(shouldExpand ? req.id : null);
                           if (isExpanded) setShowAiResponseId(null);
+                          if (shouldExpand) onRequestViewed?.(req);
                         }}
+                        aria-label={isExpanded ? `Collapse request ${req.id}` : `Expand request ${req.id}`}
                         className="p-1 rounded hover:bg-muted transition-colors flex-shrink-0"
                       >
                         <ChevronDown

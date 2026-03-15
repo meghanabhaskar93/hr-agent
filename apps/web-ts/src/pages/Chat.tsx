@@ -127,6 +127,42 @@ function removeConversationTitles(userEmail: string, conversationIds: string[]):
   }
 }
 
+function requestViewsStorageKey(userEmail: string): string {
+  return `pinghr:request-views:${userEmail.toLowerCase()}`;
+}
+
+function loadRequestViews(userEmail: string): Record<string, number> {
+  try {
+    const raw = localStorage.getItem(requestViewsStorageKey(userEmail));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object") return {};
+    const cleaned: Record<string, number> = {};
+    for (const [requestId, value] of Object.entries(parsed)) {
+      if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+        cleaned[requestId] = value;
+      }
+    }
+    return cleaned;
+  } catch {
+    return {};
+  }
+}
+
+function saveRequestViews(
+  userEmail: string,
+  viewsByRequestId: Record<string, number>
+): void {
+  try {
+    localStorage.setItem(
+      requestViewsStorageKey(userEmail),
+      JSON.stringify(viewsByRequestId)
+    );
+  } catch {
+    // Ignore storage errors and keep UI usable.
+  }
+}
+
 function detectCategory(text: string): string {
   const lower = text.toLowerCase();
   if (
@@ -205,8 +241,14 @@ function mapHRRequestToPanelRequest(item: BackendHRRequest): EscalatedRequest {
     priority: mappedPriority,
     category: `${item.type} / ${item.subtype}`,
     timestamp: createdAt,
+    lastUpdatedAt: updatedAt,
     auditLog,
   };
+}
+
+function requestUpdateTimestampMs(request: EscalatedRequest): number {
+  const timestamp = (request.lastUpdatedAt || request.timestamp).getTime();
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 export default function ChatPage() {
@@ -221,6 +263,9 @@ export default function ChatPage() {
   const [requestsOpen, setRequestsOpen] = useState(false);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [escalatedRequests, setEscalatedRequests] = useState<EscalatedRequest[]>([]);
+  const [viewedRequestById, setViewedRequestById] = useState<
+    Record<string, number>
+  >({});
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -286,6 +331,31 @@ export default function ChatPage() {
   }, [user?.email, loadEscalatedRequests]);
 
   useEffect(() => {
+    if (!user?.email) {
+      setViewedRequestById({});
+      return;
+    }
+    setViewedRequestById(loadRequestViews(user.email));
+  }, [user?.email]);
+
+  const markRequestViewed = useCallback(
+    (request: EscalatedRequest) => {
+      const userEmail = user?.email;
+      if (!userEmail) return;
+      const viewedAt = requestUpdateTimestampMs(request);
+      if (viewedAt <= 0) return;
+
+      setViewedRequestById((prev) => {
+        if ((prev[request.id] ?? 0) >= viewedAt) return prev;
+        const next = { ...prev, [request.id]: viewedAt };
+        saveRequestViews(userEmail, next);
+        return next;
+      });
+    },
+    [user?.email]
+  );
+
+  useEffect(() => {
     if (!user?.email || !requestsOpen) return;
     let stopped = false;
 
@@ -312,6 +382,15 @@ export default function ChatPage() {
   if (!session || !user) {
     return <Navigate to="/auth" replace />;
   }
+
+  const unreadRequestCount = escalatedRequests.reduce((count, request) => {
+    const viewedAt = viewedRequestById[request.id] ?? 0;
+    return requestUpdateTimestampMs(request) > viewedAt ? count + 1 : count;
+  }, 0);
+
+  const handleRequestViewed = (request: EscalatedRequest) => {
+    markRequestViewed(request);
+  };
 
   const handleSend = async (text?: string) => {
     const msg = text || input.trim();
@@ -629,9 +708,9 @@ export default function ChatPage() {
           >
             <Mail className="h-4 w-4" />
             My Requests
-            {escalatedRequests.length > 0 && (
+            {unreadRequestCount > 0 && (
               <span className="ml-1 h-5 min-w-5 px-1 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold flex items-center justify-center">
-                {escalatedRequests.length}
+                {unreadRequestCount}
               </span>
             )}
           </Button>
@@ -715,6 +794,7 @@ export default function ChatPage() {
         onClose={() => setRequestsOpen(false)}
         requests={escalatedRequests}
         onReplyToRequest={handleRequesterReply}
+        onRequestViewed={handleRequestViewed}
       />
     </div>
   );

@@ -80,4 +80,27 @@ describe("MyRequestsPanel status filters", () => {
     expect(screen.getByText("Resolved ticket")).toBeInTheDocument();
     expect(screen.queryByText("Pending ticket")).not.toBeInTheDocument();
   });
+
+  it("notifies when a request is viewed by expanding it", () => {
+    const requests: EscalatedRequest[] = [makeRequest("9", "Resolved ticket", "resolved")];
+    const onRequestViewed = vi.fn();
+
+    render(
+      <MemoryRouter>
+        <MyRequestsPanel
+          isOpen
+          onClose={() => {}}
+          requests={requests}
+          onRequestViewed={onRequestViewed}
+        />
+      </MemoryRouter>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand request 9" }));
+
+    expect(onRequestViewed).toHaveBeenCalledTimes(1);
+    expect(onRequestViewed).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "9", status: "resolved" })
+    );
+  });
 });
