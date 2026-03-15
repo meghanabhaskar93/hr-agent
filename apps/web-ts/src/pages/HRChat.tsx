@@ -13,6 +13,7 @@ import { useHRTickets } from "@/contexts/HRTicketsContext";
 import type { ResolutionTag } from "@/contexts/HRTicketsContext";
 import { mockEmployees } from "@/data/mockEmployees";
 import {
+  createHRRequest,
   createSession,
   deleteSession,
   fetchSessions,
@@ -608,6 +609,63 @@ export default function HRChat() {
     toast.success(`Ticket moved to ${nextStatus.replace("_", " ")}`);
   };
 
+  const handleEscalate = async (msg: Message) => {
+    if (!user?.email) return;
+
+    const msgIdx = messages.findIndex((item) => item.id === msg.id);
+    const userMsg = [...messages]
+      .slice(0, msgIdx >= 0 ? msgIdx : messages.length)
+      .reverse()
+      .find((m) => m.role === "user");
+    const originalQuery = (userMsg?.content || "").trim();
+    const assistantResponse = msg.content.trim();
+    if (!assistantResponse) return;
+
+    const summary = `HR chat quality escalation${
+      originalQuery ? `: ${originalQuery.slice(0, 120)}` : ""
+    }`;
+    const description =
+      "HR user flagged chatbot output as irrelevant/unusable and requested manual follow-up.\n\n" +
+      (originalQuery ? `Original query:\n${originalQuery}\n\n` : "") +
+      `Assistant response:\n${assistantResponse}`;
+
+    try {
+      const result = await createHRRequest(user.email, {
+        type: "HR",
+        subtype: "ESCALATION",
+        summary: summary.slice(0, 500),
+        description: description.slice(0, 5000),
+        priority: "P1",
+        risk_level: "MED",
+        required_fields: [
+          "summary",
+          "description",
+          "requester_user_id",
+          "type",
+          "subtype",
+          "classification",
+          "assistant_response",
+        ],
+        captured_fields: {
+          classification: "INTERNAL_IMPROVEMENT",
+          source_channel: "HR_CHAT",
+          taxonomy_path: "HR/ESCALATION/INTERNAL_IMPROVEMENT",
+          conversation_id: activeConversation,
+          original_query: originalQuery || null,
+          assistant_response: assistantResponse.slice(0, 3500),
+        },
+      });
+      if (!result.success) {
+        throw new Error(result.error || "Escalation request creation failed");
+      }
+      toast.success(
+        `Escalated to HR Ops as internal improvement (#${result.request_id ?? "new"})`
+      );
+    } catch (error: any) {
+      toast.error(error?.message || "Failed to escalate");
+    }
+  };
+
   const showWelcome = messages.length === 0 && !isTyping;
   const activeTicket = activeTicketId ? getTicketById(activeTicketId) : null;
 
@@ -681,7 +739,14 @@ export default function HRChat() {
           ) : (
             <div className="max-w-3xl mx-auto px-6 py-6 space-y-4">
               {messages.map((msg) => (
-                <ChatMessageBubble key={msg.id} msg={msg} onEscalate={() => {}} showEscalate={false} />
+                <ChatMessageBubble
+                  key={msg.id}
+                  msg={msg}
+                  onEscalate={(message) => {
+                    void handleEscalate(message);
+                  }}
+                  showEscalate
+                />
               ))}
               {isTyping && messages[messages.length - 1]?.role !== "assistant" && (
                 <div className="flex gap-3">
