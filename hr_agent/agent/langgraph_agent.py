@@ -399,6 +399,18 @@ class HRAgentLangGraph:
         """Get the requester's context including role and permissions."""
         return get_employee_service().get_requester_context(user_email)
 
+    def load_history_from_turns(self, turns: Sequence[dict[str, Any]]) -> None:
+        """Hydrate in-memory message history from stored session turns."""
+        hydrated_history: list[BaseMessage] = []
+        for turn in turns:
+            query = str(turn.get("query", "")).strip()
+            response = str(turn.get("response", "")).strip()
+            if query:
+                hydrated_history.append(HumanMessage(content=query))
+            if response:
+                hydrated_history.append(AIMessage(content=response))
+        self._message_history = hydrated_history
+
     def chat(self, query: str) -> str:
         """Process a user query and return the response."""
         self._message_history.append(HumanMessage(content=query))
@@ -550,17 +562,26 @@ class HRAgentLangGraph:
 # ============================================================================
 
 
-def run_hr_agent(user_email: str, question: str) -> str:
+def run_hr_agent(
+    user_email: str,
+    question: str,
+    session_id: str | None = None,
+    prior_turns: Sequence[dict[str, Any]] | None = None,
+) -> str:
     """Run the HR agent with a single query.
 
     Args:
         user_email: The email of the user making the request
         question: The question to ask
+        session_id: Session identifier for multi-turn continuity
+        prior_turns: Previously stored turns for the session
 
     Returns:
         The agent's response
     """
-    agent = HRAgentLangGraph(user_email)
+    agent = HRAgentLangGraph(user_email, session_id=session_id)
+    if prior_turns:
+        agent.load_history_from_turns(prior_turns)
     return agent.chat(question)
 
 

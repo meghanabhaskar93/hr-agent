@@ -84,3 +84,60 @@ def test_session_turns_forbidden_and_not_found():
 
     app.dependency_overrides.clear()
     server._sessions.clear()
+
+
+def test_chat_follow_up_uses_session_turn_history(monkeypatch):
+    app.dependency_overrides[get_current_user] = _override_user
+    server._sessions.clear()
+
+    observed_calls: list[dict] = []
+
+    def _fake_run_hr_agent(
+        user_email: str,
+        question: str,
+        session_id: str | None = None,
+        prior_turns: list[dict] | None = None,
+    ) -> str:
+        turns = list(prior_turns or [])
+        observed_calls.append(
+            {
+                "user_email": user_email,
+                "question": question,
+                "session_id": session_id,
+                "prior_turns": turns,
+            }
+        )
+        return f"response-for:{question}|history:{len(turns)}"
+
+    monkeypatch.setattr(server, "run_hr_agent", _fake_run_hr_agent)
+
+    with TestClient(app) as client:
+        first = client.post("/chat", json={"message": "I need employee info"})
+        assert first.status_code == 200
+        first_payload = first.json()
+        session_id = first_payload["session_id"]
+        assert first_payload["response"] == "response-for:I need employee info|history:0"
+
+        second = client.post(
+            "/chat",
+            json={"message": "employee 201", "session_id": session_id},
+        )
+        assert second.status_code == 200
+        second_payload = second.json()
+        assert second_payload["session_id"] == session_id
+        assert second_payload["response"] == "response-for:employee 201|history:1"
+
+    assert len(observed_calls) == 2
+    assert observed_calls[0]["session_id"] == session_id
+    assert observed_calls[0]["prior_turns"] == []
+
+    assert observed_calls[1]["session_id"] == session_id
+    assert len(observed_calls[1]["prior_turns"]) == 1
+    assert observed_calls[1]["prior_turns"][0]["query"] == "I need employee info"
+    assert (
+        observed_calls[1]["prior_turns"][0]["response"]
+        == "response-for:I need employee info|history:0"
+    )
+
+    app.dependency_overrides.clear()
+    server._sessions.clear()

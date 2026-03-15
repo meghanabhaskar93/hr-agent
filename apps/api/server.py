@@ -654,6 +654,8 @@ async def chat(request: ChatRequest, user: dict = Depends(get_current_user)):
         response = run_hr_agent(
             user_email=user["user_email"],
             question=request.message,
+            session_id=session_id,
+            prior_turns=session.get("turns", []),
         )
 
         # Store the turn
