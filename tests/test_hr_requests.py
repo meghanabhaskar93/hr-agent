@@ -172,6 +172,9 @@ def test_hr_request_service_permissions_transitions_and_audit(tmp_path: Path):
         assignee_user_id="james.wilson@acme.com",
     )
     assert assigned["success"] is True
+    assigned_row = repo.get_by_id(request_id)
+    assert assigned_row is not None
+    assert assigned_row["status"] == "IN_PROGRESS"
 
     asked_for_info = service.message_requester(
         viewer_email="amanda.foster@acme.com",
@@ -195,12 +198,20 @@ def test_hr_request_service_permissions_transitions_and_audit(tmp_path: Path):
     )
     assert replied["success"] is True
 
-    moved_to_work = service.transition_status(
+    resolved_after_confirmation = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        new_status="RESOLVED",
+        resolution_text="Thanks for the clarification. Resolving now.",
+    )
+    assert resolved_after_confirmation["success"] is True
+
+    reopened_to_work = service.transition_status(
         viewer_email="amanda.foster@acme.com",
         request_id=request_id,
         new_status="IN_PROGRESS",
     )
-    assert moved_to_work["success"] is True
+    assert reopened_to_work["success"] is True
 
     captured = service.capture_fields(
         viewer_email="alex.kim@acme.com",

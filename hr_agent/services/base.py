@@ -642,12 +642,13 @@ class HRRequestService:
     ALLOWED_TRANSITIONS = {
         "NEW": {"NEEDS_INFO", "READY", "IN_PROGRESS", "ESCALATED", "CANCELLED"},
         "NEEDS_INFO": {"READY", "IN_PROGRESS", "ESCALATED", "CANCELLED"},
-        "READY": {"IN_PROGRESS", "NEEDS_INFO", "ESCALATED", "CANCELLED"},
+        "READY": {"IN_PROGRESS", "NEEDS_INFO", "RESOLVED", "ESCALATED", "CANCELLED"},
         "IN_PROGRESS": {"NEEDS_INFO", "READY", "RESOLVED", "ESCALATED", "CANCELLED"},
         "ESCALATED": {"IN_PROGRESS", "NEEDS_INFO", "RESOLVED", "CANCELLED"},
         "RESOLVED": {"IN_PROGRESS"},
         "CANCELLED": set(),
     }
+    AUTO_PROGRESS_ON_ASSIGN_STATUSES = {"NEW", "NEEDS_INFO", "READY", "ESCALATED"}
     TRIAGE_ROLES = {"HR", "MANAGER"}
     DEFAULT_REQUIRED_FIELDS = [
         "summary",
@@ -1097,6 +1098,9 @@ class HRRequestService:
         viewer_role = self._get_viewer_role(viewer_email)
         if not self._is_triage_role(viewer_email, viewer_role):
             return {"success": False, "error": "Only HR/Manager can triage requests."}
+        existing = self.repo.get_by_id(request_id)
+        if not existing:
+            return {"success": False, "error": "HR request not found."}
         normalized_assignee = assignee_user_id.strip().lower() if assignee_user_id else None
         if normalized_assignee:
             assignee = self.employee_repo.get_by_email(normalized_assignee)
@@ -1110,6 +1114,20 @@ class HRRequestService:
         )
         if not ok:
             return {"success": False, "error": "HR request not found."}
+        current_status = str(existing.get("status") or "NEW")
+        if (
+            normalized_assignee
+            and current_status in self.AUTO_PROGRESS_ON_ASSIGN_STATUSES
+        ):
+            progressed = self.repo.update_status_with_event(
+                request_id=request_id,
+                status="IN_PROGRESS",
+                actor_user_id=viewer_email,
+                actor_role=viewer_role,
+                event_note="Auto-moved to IN_PROGRESS after assignment.",
+            )
+            if not progressed:
+                return {"success": False, "error": "Failed to auto-start assigned request."}
         return {"success": True}
 
     def update_priority(

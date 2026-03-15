@@ -1192,7 +1192,7 @@ export default function HROps() {
                                           </Button>
                                         )}
 
-                                        {(item.status === "IN_PROGRESS" || item.status === "ESCALATED") && (
+                                        {(item.status === "READY" || item.status === "IN_PROGRESS" || item.status === "ESCALATED") && (
                                           <Button
                                             size="sm"
                                             onClick={(e) => {
