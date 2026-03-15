@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
@@ -45,6 +45,7 @@ import MyRequestsPanel from "@/components/MyRequestsPanel";
 import type { Conversation } from "@/components/ConversationSidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { useHRTickets } from "@/contexts/HRTicketsContext";
+import { fetchSessions } from "@/lib/backend";
 
 // Mock audit log data
 const logs = [
@@ -101,6 +102,23 @@ const stats = [
   { label: "Satisfaction", value: "4.6/5", change: "+0.3", icon: ThumbsUp, trend: "up" },
 ];
 
+const NEW_CONVERSATION_LABEL = "New conversation";
+
+function conversationTitlesStorageKey(userEmail: string): string {
+  return `pinghr:hr-conversation-titles:${userEmail.toLowerCase()}`;
+}
+
+function loadConversationTitles(userEmail: string): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(conversationTitlesStorageKey(userEmail));
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export default function AuditLog() {
   const { user } = useAuth();
   const { getAssignedTickets, getAssignedRequests } = useHRTickets();
@@ -112,6 +130,40 @@ export default function AuditLog() {
   const displayName = user?.email?.split("@")[0] ?? "HR User";
   const assignedTickets = getAssignedTickets(displayName);
   const assignedRequests = getAssignedRequests(displayName);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    let cancelled = false;
+
+    const loadData = async () => {
+      try {
+        const storedTitles = loadConversationTitles(user.email);
+        const sessions = await fetchSessions(user.email);
+        if (cancelled) return;
+        setConversations(
+          sessions
+            .map((session) => ({
+              id: session.session_id,
+              preview:
+                storedTitles[session.session_id] ||
+                session.title ||
+                (session.turn_count > 0
+                  ? `Conversation ${new Date(session.created_at).toLocaleDateString()}`
+                  : NEW_CONVERSATION_LABEL),
+              timestamp: new Date(session.created_at),
+            }))
+            .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+        );
+      } catch (error) {
+        console.error("Failed to load HR conversations:", error);
+      }
+    };
+
+    void loadData();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.email]);
 
   return (
     <div className="min-h-screen flex w-full">
