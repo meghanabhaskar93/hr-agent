@@ -32,8 +32,9 @@ def _override_other_user():
     }
 
 
-def test_session_turns_history_endpoint():
+def test_session_turns_history_endpoint(monkeypatch):
     app.dependency_overrides[get_current_user] = _override_user
+    monkeypatch.setattr(server, "seed_if_needed", lambda: None)
     server._sessions.clear()
     server._sessions["session-1"] = {
         "user_email": "alex.kim@acme.com",
@@ -65,7 +66,8 @@ def test_session_turns_history_endpoint():
     server._sessions.clear()
 
 
-def test_session_turns_forbidden_and_not_found():
+def test_session_turns_forbidden_and_not_found(monkeypatch):
+    monkeypatch.setattr(server, "seed_if_needed", lambda: None)
     server._sessions.clear()
     server._sessions["session-1"] = {
         "user_email": "alex.kim@acme.com",
@@ -88,6 +90,7 @@ def test_session_turns_forbidden_and_not_found():
 
 def test_chat_follow_up_uses_session_turn_history(monkeypatch):
     app.dependency_overrides[get_current_user] = _override_user
+    monkeypatch.setattr(server, "seed_if_needed", lambda: None)
     server._sessions.clear()
 
     observed_calls: list[dict] = []
