@@ -1,10 +1,11 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import {
   AlertTriangle,
   ArrowUpDown,
   CheckCircle2,
+  CircleHelp,
   ChevronDown,
   ChevronUp,
   Clock,
@@ -37,6 +38,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import HRConversationSidebar from "@/components/HRConversationSidebar";
 import MyRequestsPanel, { type EscalatedRequest } from "@/components/MyRequestsPanel";
 import type { Conversation } from "@/components/ConversationSidebar";
@@ -416,6 +418,7 @@ export default function HROps() {
   const [messageDraft, setMessageDraft] = useState<Record<number, string>>({});
   const [resolutionNotes, setResolutionNotes] = useState<Record<number, string>>({});
   const [viewedRequestById, setViewedRequestById] = useState<Record<string, number>>({});
+  const messageInputRefs = useRef<Record<number, HTMLTextAreaElement | null>>({});
 
   const currentUserEmail = user?.email?.toLowerCase() || "";
 
@@ -518,7 +521,7 @@ export default function HROps() {
     requestId: number,
     action: () => Promise<unknown>,
     successMessage: string
-  ) => {
+  ): Promise<boolean> => {
     try {
       await action();
       toast.success(successMessage);
@@ -527,8 +530,10 @@ export default function HROps() {
       } catch {
         await loadRequests();
       }
+      return true;
     } catch (error: any) {
       toast.error(error?.message || "Action failed");
+      return false;
     }
   };
 
@@ -627,7 +632,7 @@ export default function HROps() {
         conversations={conversations}
         onSelectConversation={(id) => {
           setActiveConversation(id);
-          navigate("/hr-chat");
+          navigate(`/hr-chat?session=${encodeURIComponent(id)}`);
         }}
         onNewConversation={() => navigate("/hr-chat?new=1")}
         onDeleteConversation={(id) => {
@@ -886,6 +891,9 @@ export default function HROps() {
                       (item.assignee_user_id || "").toLowerCase() === currentUserEmail;
                     const canAssign = item.status !== "RESOLVED" && item.status !== "CANCELLED";
                     const isResolved = item.status === "RESOLVED";
+                    const isSelfRaisedHRRequest =
+                      item.requester_role === "HR" &&
+                      (item.requester_user_id || "").toLowerCase() === currentUserEmail;
                     const missingFields = detail?.missing_fields || [];
                     const agentSuggestionRaw =
                       detail?.request?.captured_fields?.["agent_suggestion"] ??
@@ -1078,6 +1086,9 @@ export default function HROps() {
                                           <Textarea
                                             placeholder="Write a message to requester..."
                                             value={messageDraft[requestId] || ""}
+                                            ref={(node) => {
+                                              messageInputRefs.current[requestId] = node;
+                                            }}
                                             onChange={(e) =>
                                               setMessageDraft((prev) => ({
                                                 ...prev,
@@ -1164,11 +1175,21 @@ export default function HROps() {
                                               toast.error("Please enter a message first.");
                                               return;
                                             }
-                                            void runAction(
-                                              requestId,
-                                              () => messageHRRequestRequester(user!.email, requestId, note),
-                                              "Requester message logged"
-                                            );
+                                            void (async () => {
+                                              const sent = await runAction(
+                                                requestId,
+                                                () => messageHRRequestRequester(user!.email, requestId, note),
+                                                "Requester message logged"
+                                              );
+                                              if (!sent) return;
+                                              setMessageDraft((prev) => ({
+                                                ...prev,
+                                                [requestId]: "",
+                                              }));
+                                              requestAnimationFrame(() => {
+                                                messageInputRefs.current[requestId]?.focus();
+                                              });
+                                            })();
                                           }}
                                         >
                                           <MessageSquare className="h-3.5 w-3.5 mr-1.5" />
@@ -1194,49 +1215,97 @@ export default function HROps() {
                                         )}
 
                                         {(item.status === "READY" || item.status === "IN_PROGRESS" || item.status === "ESCALATED") && (
-                                          <Button
-                                            size="sm"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              void runAction(
-                                                requestId,
-                                                () =>
-                                                  transitionHRRequestStatus(
-                                                    user!.email,
-                                                    requestId,
-                                                    "RESOLVED",
-                                                    resolutionNotes[requestId]?.trim() || undefined
-                                                  ),
-                                                "Marked resolved"
-                                              );
-                                            }}
-                                          >
-                                            <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />
-                                            Mark resolved
-                                          </Button>
+                                          <div className="flex items-center gap-2">
+                                            <Button
+                                              size="sm"
+                                              disabled={isSelfRaisedHRRequest}
+                                              title={
+                                                isSelfRaisedHRRequest
+                                                  ? "A peer HR reviewer must resolve this HR-raised request."
+                                                  : undefined
+                                              }
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                if (isSelfRaisedHRRequest) {
+                                                  toast.error(
+                                                    "A peer HR reviewer must resolve this HR-raised request."
+                                                  );
+                                                  return;
+                                                }
+                                                void runAction(
+                                                  requestId,
+                                                  () =>
+                                                    transitionHRRequestStatus(
+                                                      user!.email,
+                                                      requestId,
+                                                      "RESOLVED",
+                                                      resolutionNotes[requestId]?.trim() || undefined
+                                                    ),
+                                                  "Marked resolved"
+                                                );
+                                              }}
+                                            >
+                                              <CheckCircle2 className="h-3.5 w-3.5 mr-1.5" />
+                                              Mark resolved
+                                            </Button>
+                                            {isSelfRaisedHRRequest && (
+                                              <Tooltip>
+                                                <TooltipTrigger asChild>
+                                                  <button
+                                                    type="button"
+                                                    onClick={(e) => e.stopPropagation()}
+                                                    className="h-7 w-7 rounded-md border border-border/70 text-muted-foreground hover:text-foreground hover:bg-muted/60 inline-flex items-center justify-center"
+                                                    aria-label="Resolution restriction info"
+                                                  >
+                                                    <CircleHelp className="h-3.5 w-3.5" />
+                                                  </button>
+                                                </TooltipTrigger>
+                                                <TooltipContent side="top" className="max-w-[240px] text-xs">
+                                                  Escalated to peer reviewer for resolution.
+                                                </TooltipContent>
+                                              </Tooltip>
+                                            )}
+                                          </div>
                                         )}
 
                                         {item.status !== "RESOLVED" && item.status !== "CANCELLED" && item.status !== "ESCALATED" && (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            onClick={(e) => {
-                                              e.stopPropagation();
-                                              void runAction(
-                                                requestId,
-                                                () =>
-                                                  escalateHRRequest(
-                                                    user!.email,
-                                                    requestId,
-                                                    resolutionNotes[requestId]?.trim() || undefined
-                                                  ),
-                                                "Escalated request"
-                                              );
-                                            }}
-                                          >
-                                            <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
-                                            Escalate
-                                          </Button>
+                                          <div className="flex items-center gap-2">
+                                            <Button
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                void runAction(
+                                                  requestId,
+                                                  () =>
+                                                    escalateHRRequest(
+                                                      user!.email,
+                                                      requestId,
+                                                      resolutionNotes[requestId]?.trim() || undefined
+                                                    ),
+                                                  "Escalated request"
+                                                );
+                                              }}
+                                            >
+                                              <ShieldAlert className="h-3.5 w-3.5 mr-1.5" />
+                                              Escalate
+                                            </Button>
+                                            <Tooltip>
+                                              <TooltipTrigger asChild>
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) => e.stopPropagation()}
+                                                  className="h-7 w-7 rounded-md border border-border/70 text-muted-foreground hover:text-foreground hover:bg-muted/60 inline-flex items-center justify-center"
+                                                  aria-label="Escalation help"
+                                                >
+                                                  <CircleHelp className="h-3.5 w-3.5" />
+                                                </button>
+                                              </TooltipTrigger>
+                                              <TooltipContent side="top" className="max-w-[260px] text-xs">
+                                                Use Escalate for higher-level or external handoff (for example payroll vendor, legal, or security).
+                                              </TooltipContent>
+                                            </Tooltip>
+                                          </div>
                                         )}
 
                                         {(item.status === "RESOLVED" || item.status === "CANCELLED") && (

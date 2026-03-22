@@ -358,6 +358,16 @@ def test_hr_request_http_error_mapping(monkeypatch):
 
         fake_service.status_result = {
             "success": False,
+            "error": "Only a different HR reviewer can resolve HR-raised requests.",
+        }
+        self_resolve_denied = client.post(
+            "/hr-requests/1/status",
+            json={"new_status": "RESOLVED"},
+        )
+        assert self_resolve_denied.status_code == 403
+
+        fake_service.status_result = {
+            "success": False,
             "error": "HR request not found.",
         }
         missing = client.post("/hr-requests/404/status", json={"new_status": "IN_PROGRESS"})

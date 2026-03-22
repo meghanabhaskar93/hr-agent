@@ -243,6 +243,13 @@ LLM_PROVIDER=openai_compatible
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 
+# Database (default local SQLite)
+DB_URL=sqlite:///./hr_demo.db
+
+# Turso (optional; when set, app uses this remote DB and persists across redeploys)
+TURSO_DATABASE_URL=
+TURSO_AUTH_TOKEN=
+
 # Optional: restrict public test deployment to specific emails
 ALLOWED_TEST_USER_EMAILS=amanda.foster@acme.com,jordan.lee@acme.com
 
@@ -256,6 +263,31 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 # Eval runs are tagged with metadata like run_type=eval and eval_dataset=<name>
 
 ```
+
+### Turso Persistence (Optional)
+
+If you want DB state to survive Render redeploys/restarts:
+
+1. Create a Turso database and auth token.
+2. Set backend env vars:
+
+```bash
+TURSO_DATABASE_URL=libsql://<db>-<org>.turso.io
+TURSO_AUTH_TOKEN=<token>
+```
+
+3. Migrate existing local data once:
+
+```bash
+python scripts/migrate_sqlite_to_turso.py \
+  --source ./hr_demo.db \
+  --target-url "$TURSO_DATABASE_URL" \
+  --target-token "$TURSO_AUTH_TOKEN"
+```
+
+Notes:
+- `TURSO_DATABASE_URL` takes precedence over `DB_URL`.
+- In-memory chat sessions are still process-local unless separately persisted.
 
 ### Using uv
 

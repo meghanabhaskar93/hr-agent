@@ -45,21 +45,7 @@ import MyRequestsPanel from "@/components/MyRequestsPanel";
 import type { Conversation } from "@/components/ConversationSidebar";
 import { useAuth } from "@/contexts/AuthContext";
 import { useHRTickets } from "@/contexts/HRTicketsContext";
-import { fetchSessions } from "@/lib/backend";
-
-// Mock audit log data
-const logs = [
-  { id: "1", timestamp: "2026-03-03 09:15", employee: "Jordan Lee", query: "Unpaid leave for family care", action: "Escalated to HR", confidence: "low" as const, resolution: "Pending", feedback: "down" as const },
-  { id: "2", timestamp: "2026-03-03 08:42", employee: "Sam Patel", query: "Stock options vesting discrepancy", action: "Escalated to HR", confidence: "low" as const, resolution: "Pending", feedback: "down" as const },
-  { id: "3", timestamp: "2026-03-02 14:30", employee: "Alex Kim", query: "Internal transfer process", action: "Answered by AI → Reviewed by HR", confidence: "low" as const, resolution: "45 min", feedback: "up" as const },
-  { id: "4", timestamp: "2026-03-01 11:20", employee: "Morgan Chen", query: "Tuition reimbursement for MBA", action: "Answered by AI → Approved", confidence: "low" as const, resolution: "30 min", feedback: "up" as const },
-  { id: "5", timestamp: "2026-03-01 10:05", employee: "Riley Park", query: "WFH policy details", action: "Answered by AI (auto)", confidence: "high" as const, resolution: "Instant", feedback: "up" as const },
-  { id: "6", timestamp: "2026-02-28 16:45", employee: "Casey Liu", query: "PTO balance check", action: "Answered by AI (auto)", confidence: "high" as const, resolution: "Instant", feedback: "up" as const },
-  { id: "7", timestamp: "2026-02-28 09:30", employee: "Taylor Singh", query: "Performance review timeline", action: "Answered by AI (auto)", confidence: "high" as const, resolution: "Instant", feedback: "up" as const },
-  { id: "8", timestamp: "2026-02-27 15:10", employee: "Sam Patel", query: "Expense report submission help", action: "Answered by AI (auto)", confidence: "high" as const, resolution: "Instant", feedback: "up" as const },
-  { id: "9", timestamp: "2026-02-27 11:05", employee: "Jordan Lee", query: "Team headcount planning", action: "Answered by AI → Reviewed by HR", confidence: "low" as const, resolution: "1 hr", feedback: "up" as const },
-  { id: "10", timestamp: "2026-02-26 09:20", employee: "Alex Kim", query: "Relocation package inquiry", action: "Escalated to HR", confidence: "low" as const, resolution: "2 hr", feedback: "down" as const },
-];
+import { fetchHRRequests, fetchSessions, type BackendHRRequest } from "@/lib/backend";
 
 // Analytics data
 const categoryData = [
@@ -104,6 +90,17 @@ const stats = [
 
 const NEW_CONVERSATION_LABEL = "New conversation";
 
+type AuditLogEntry = {
+  id: string;
+  timestamp: Date;
+  employee: string;
+  query: string;
+  action: string;
+  confidence: "high" | "low";
+  resolution: string;
+  feedback: "up" | "down";
+};
+
 function conversationTitlesStorageKey(userEmail: string): string {
   return `pinghr:hr-conversation-titles:${userEmail.toLowerCase()}`;
 }
@@ -119,6 +116,77 @@ function loadConversationTitles(userEmail: string): Record<string, string> {
   }
 }
 
+function toAuditTimestamp(date: Date): string {
+  return date
+    .toLocaleString("sv-SE", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    })
+    .replace(",", "");
+}
+
+function toEmployeeLabel(request: BackendHRRequest): string {
+  const requesterName = request.requester_name?.trim();
+  if (requesterName) return requesterName;
+  const requesterUserId = request.requester_user_id?.trim();
+  if (!requesterUserId) return "Employee";
+  return requesterUserId.split("@")[0];
+}
+
+function toEscalationQuery(request: BackendHRRequest): string {
+  const original = request.captured_fields?.["original_query"];
+  if (typeof original === "string" && original.trim()) return original.trim();
+  if (request.description.trim()) return request.description.trim();
+  if (request.summary.trim()) return request.summary.trim();
+  return "(No escalation query captured)";
+}
+
+function toAuditAction(request: BackendHRRequest): string {
+  if (request.status === "RESOLVED") return "Escalation resolved by HR";
+  if (request.status === "NEEDS_INFO") return "HR requested more information";
+  if (request.status === "IN_PROGRESS") return "Escalation under HR review";
+  if (request.status === "ESCALATED") return "Escalated for external handoff";
+  if (request.status === "CANCELLED") return "Escalation cancelled";
+  return "Escalated to HR";
+}
+
+function toDurationLabel(startIso: string, endIso: string): string {
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return "Resolved";
+  const diffMs = end - start;
+  const minutes = Math.floor(diffMs / 60000);
+  if (minutes < 1) return "Instant";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.round((minutes / 60) * 10) / 10;
+  if (hours < 24) return `${hours} hr`;
+  const days = Math.round((hours / 24) * 10) / 10;
+  return `${days} d`;
+}
+
+function mapHRRequestToAuditEntry(request: BackendHRRequest): AuditLogEntry {
+  const isResolved = request.status === "RESOLVED";
+  const timestamp = new Date(request.updated_at || request.created_at);
+  return {
+    id: String(request.request_id),
+    timestamp,
+    employee: toEmployeeLabel(request),
+    query: toEscalationQuery(request),
+    action: toAuditAction(request),
+    confidence: "low",
+    resolution: isResolved
+      ? toDurationLabel(request.created_at, request.updated_at || request.created_at)
+      : request.status === "CANCELLED"
+        ? "Cancelled"
+        : "Pending",
+    feedback: isResolved ? "up" : "down",
+  };
+}
+
 export default function AuditLog() {
   const { user } = useAuth();
   const { getAssignedTickets, getAssignedRequests } = useHRTickets();
@@ -126,6 +194,8 @@ export default function AuditLog() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [requestsOpen, setRequestsOpen] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [auditLoading, setAuditLoading] = useState(true);
 
   const displayName = user?.email?.split("@")[0] ?? "HR User";
   const assignedTickets = getAssignedTickets(displayName);
@@ -136,9 +206,13 @@ export default function AuditLog() {
     let cancelled = false;
 
     const loadData = async () => {
+      setAuditLoading(true);
       try {
         const storedTitles = loadConversationTitles(user.email);
-        const sessions = await fetchSessions(user.email);
+        const [sessions, hrRequests] = await Promise.all([
+          fetchSessions(user.email),
+          fetchHRRequests(user.email),
+        ]);
         if (cancelled) return;
         setConversations(
           sessions
@@ -155,8 +229,20 @@ export default function AuditLog() {
             }))
             .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
         );
+
+        const escalationLogs = hrRequests
+          .filter(
+            (request) =>
+              (request.type || "").toUpperCase() === "ESCALATION" &&
+              (request.requester_role || "").toUpperCase() === "EMPLOYEE"
+          )
+          .map(mapHRRequestToAuditEntry)
+          .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+        setAuditLogs(escalationLogs);
       } catch (error) {
         console.error("Failed to load HR conversations:", error);
+      } finally {
+        if (!cancelled) setAuditLoading(false);
       }
     };
 
@@ -171,7 +257,10 @@ export default function AuditLog() {
       <HRConversationSidebar
         activeConversationId={activeConversation}
         conversations={conversations}
-        onSelectConversation={setActiveConversation}
+        onSelectConversation={(id) => {
+          setActiveConversation(id);
+          navigate(`/hr-chat?session=${encodeURIComponent(id)}`);
+        }}
         onNewConversation={() => navigate("/hr-chat?new=1")}
         onDeleteConversation={(id) => {
           setConversations((prev) => prev.filter((c) => c.id !== id));
@@ -439,7 +528,21 @@ export default function AuditLog() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {logs.map((log, i) => (
+                    {auditLoading && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="text-sm text-muted-foreground py-6 text-center">
+                          Loading escalation activity...
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {!auditLoading && auditLogs.length === 0 && (
+                      <TableRow>
+                        <TableCell colSpan={7} className="text-sm text-muted-foreground py-6 text-center">
+                          No employee escalation activity found yet.
+                        </TableCell>
+                      </TableRow>
+                    )}
+                    {auditLogs.map((log, i) => (
                       <motion.tr
                         key={log.id}
                         initial={{ opacity: 0 }}
@@ -447,7 +550,7 @@ export default function AuditLog() {
                         transition={{ delay: i * 0.03 }}
                         className="border-b last:border-0 hover:bg-muted/20 transition-colors"
                       >
-                        <TableCell className="text-muted-foreground whitespace-nowrap text-sm">{log.timestamp}</TableCell>
+                        <TableCell className="text-muted-foreground whitespace-nowrap text-sm">{toAuditTimestamp(log.timestamp)}</TableCell>
                         <TableCell className="font-medium text-sm">{log.employee}</TableCell>
                         <TableCell className="max-w-[200px] truncate text-sm">{log.query}</TableCell>
                         <TableCell className="text-muted-foreground text-xs">{log.action}</TableCell>

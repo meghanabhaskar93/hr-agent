@@ -75,6 +75,9 @@ interface MyRequestsPanelProps {
   isOpen: boolean;
   onClose: () => void;
   requests: EscalatedRequest[];
+  title?: string;
+  subtitle?: string;
+  emptyStateMessage?: string;
   onWorkOnRequest?: (requestId: string) => void;
   onReplyToRequest?: (requestId: string, message: string) => Promise<void> | void;
   onRequestViewed?: (request: EscalatedRequest) => void;
@@ -88,6 +91,9 @@ export default function MyRequestsPanel({
   isOpen,
   onClose,
   requests,
+  title = "My Requests",
+  subtitle,
+  emptyStateMessage = "No requests yet. Escalate a response to create one.",
   onWorkOnRequest,
   onReplyToRequest,
   onRequestViewed,
@@ -157,8 +163,10 @@ export default function MyRequestsPanel({
           {/* Header */}
           <div className="flex items-center justify-between px-5 pt-5 pb-3">
             <div>
-              <h2 className="text-lg font-semibold">My Requests</h2>
-              <p className="text-xs text-muted-foreground">{requests.length} escalated queries</p>
+              <h2 className="text-lg font-semibold">{title}</h2>
+              <p className="text-xs text-muted-foreground">
+                {subtitle ?? `${requests.length} escalated queries`}
+              </p>
             </div>
             <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-muted transition-colors">
               <X className="h-4 w-4 text-muted-foreground" />
@@ -208,7 +216,7 @@ export default function MyRequestsPanel({
           <div className="flex-1 overflow-y-auto px-5 pb-4 space-y-3 bg-card">
             {filtered.length === 0 && (
               <div className="text-center py-8 text-sm text-muted-foreground">
-                No requests yet. Escalate a response to create one.
+                {emptyStateMessage}
               </div>
             )}
             {filtered.map((req) => {

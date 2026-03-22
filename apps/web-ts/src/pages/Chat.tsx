@@ -643,8 +643,8 @@ export default function ChatPage() {
     );
   };
 
-  const handleEscalate = async (msg: Message) => {
-    if (!user?.email) return;
+  const handleEscalate = async (msg: Message): Promise<boolean> => {
+    if (!user?.email) return false;
     const msgIdx = messages.findIndex((item) => item.id === msg.id);
     const userMsg = [...messages]
       .slice(0, msgIdx >= 0 ? msgIdx : messages.length)
@@ -687,8 +687,10 @@ export default function ChatPage() {
 
       await loadEscalatedRequests();
       toast.success(`Escalated to HR Ops (#${result.request_id ?? "new"})`);
+      return true;
     } catch (error: any) {
       toast.error(error?.message || "Failed to escalate");
+      return false;
     }
   };
 

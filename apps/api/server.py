@@ -516,6 +516,8 @@ def _raise_hr_request_http_error(message: str, default_status: int = 400) -> Non
     lowered = message.lower()
     if "only hr/manager" in lowered or "only requester" in lowered:
         raise HTTPException(status_code=403, detail=message)
+    if "different hr reviewer" in lowered:
+        raise HTTPException(status_code=403, detail=message)
     if "not found" in lowered:
         raise HTTPException(status_code=404, detail=message)
     raise HTTPException(status_code=default_status, detail=message)

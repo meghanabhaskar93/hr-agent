@@ -9,6 +9,8 @@ class Settings(BaseSettings):
         default="alex.kim@acme.com", validation_alias="DEMO_USER_EMAIL"
     )
     db_url: str = Field(default="sqlite:///./hr_demo.db", validation_alias="DB_URL")
+    turso_database_url: str = Field(default="", validation_alias="TURSO_DATABASE_URL")
+    turso_auth_token: str = Field(default="", validation_alias="TURSO_AUTH_TOKEN")
     allowed_test_user_emails: str = Field(
         default="", validation_alias="ALLOWED_TEST_USER_EMAILS"
     )
@@ -58,7 +60,10 @@ def get_langfuse_handler():
         return None
 
     import os
-    from langfuse.langchain import CallbackHandler
+    try:
+        from langfuse.langchain import CallbackHandler
+    except ModuleNotFoundError:
+        return None
 
     # Langfuse v3+ reads from environment variables
     # Set them temporarily if not already set
@@ -85,7 +90,10 @@ def get_langfuse_client():
         return None
 
     import os
-    from langfuse import Langfuse
+    try:
+        from langfuse import Langfuse
+    except ModuleNotFoundError:
+        return None
 
     os.environ.setdefault("LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key)
     os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)

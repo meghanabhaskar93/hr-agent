@@ -20,6 +20,7 @@ from ..services.base import (
     get_holiday_service,
     get_compensation_service,
     get_company_service,
+    get_escalation_service,
 )
 
 
@@ -115,6 +116,16 @@ class LimitInput(BaseModel):
     """Input for queries with a limit."""
 
     limit: int = Field(default=10, description="Maximum number of results")
+
+
+class EscalationCategoryInsightsInput(BaseModel):
+    """Input for escalation category analytics."""
+
+    month: Optional[str] = Field(
+        default=None,
+        description="Month in YYYY-MM format. Defaults to current month.",
+    )
+    limit: int = Field(default=5, description="Maximum number of categories to return")
 
 
 # ============================================================================
@@ -509,6 +520,26 @@ def get_upcoming_events(days_ahead: int = 30) -> list[dict]:
 
 
 # ============================================================================
+# HR OPS ANALYTICS TOOLS
+# ============================================================================
+
+
+@tool(args_schema=EscalationCategoryInsightsInput)
+def get_top_escalation_categories(
+    month: str | None = None, limit: int = 5
+) -> dict:
+    """Get top escalation categories for a month with status and resolution insights.
+
+    Use this tool when:
+    - Asked for escalation analytics or category trends
+    - Asked "What are the top escalation categories this month?"
+
+    Returns: month totals, status breakdown, resolution rate, and top categories
+    """
+    return get_escalation_service().get_top_categories(month=month, limit=limit)
+
+
+# ============================================================================
 # TOOL REGISTRY - Export all tools for LangGraph
 # ============================================================================
 
@@ -546,6 +577,8 @@ def get_all_tools() -> list:
         get_company_holidays,
         get_announcements,
         get_upcoming_events,
+        # HR Ops Analytics
+        get_top_escalation_categories,
     ]
 
 
@@ -573,6 +606,7 @@ def get_read_only_tools() -> list:
         get_company_holidays,
         get_announcements,
         get_upcoming_events,
+        get_top_escalation_categories,
     ]
 
 

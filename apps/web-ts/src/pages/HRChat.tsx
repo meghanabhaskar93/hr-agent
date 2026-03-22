@@ -4,7 +4,7 @@ import { Loader2, ArrowUp, Sparkles, Mail, Bot, FileText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import HRConversationSidebar from "@/components/HRConversationSidebar";
-import MyRequestsPanel from "@/components/MyRequestsPanel";
+import MyRequestsPanel, { type EscalatedRequest } from "@/components/MyRequestsPanel";
 import ChatMessageBubble from "@/components/ChatMessageBubble";
 import HRCategoryCards from "@/components/HRCategoryCards";
 import TicketActionBar from "@/components/TicketActionBar";
@@ -16,9 +16,12 @@ import {
   createHRRequest,
   createSession,
   deleteSession,
+  fetchHRRequestDetail,
+  fetchHRRequests,
   fetchSessions,
   fetchSessionTurns,
   sendChat,
+  type BackendHRRequest,
   type BackendSessionTurn,
 } from "@/lib/backend";
 import { toast } from "sonner";
@@ -186,9 +189,96 @@ ${ticket.aiDraft}
 Help me review this case. Is the AI draft accurate? Are there any policy nuances I should consider? What's the best way to handle this?`;
 }
 
+function toAssignedPanelStatus(
+  status: BackendHRRequest["status"],
+  assigneeUserId?: string | null
+): EscalatedRequest["status"] {
+  if (status === "RESOLVED" || status === "CANCELLED") return "resolved";
+  if (status === "NEEDS_INFO") return "in_review";
+  if (status === "IN_PROGRESS" || status === "ESCALATED") return "in_progress";
+  if (assigneeUserId) return "assigned";
+  return "pending";
+}
+
+function mapAssignedHRRequestToPanel(item: BackendHRRequest): EscalatedRequest {
+  const createdAt = new Date(item.created_at);
+  const updatedAt = new Date(item.updated_at);
+  const lastMessageAt = item.last_message_at ? new Date(item.last_message_at) : null;
+  const hasHrMessage =
+    typeof item.last_message_to_requester === "string" &&
+    item.last_message_to_requester.trim().length > 0;
+  const latestUpdate =
+    item.last_message_to_requester ||
+    item.resolution_text ||
+    (typeof item.captured_fields?.agent_suggestion === "string"
+      ? item.captured_fields.agent_suggestion
+      : null) ||
+    "No latest update has been recorded yet.";
+
+  const auditLog: { label: string; timestamp: Date }[] = [
+    { label: "Request created", timestamp: createdAt },
+  ];
+  if (hasHrMessage && lastMessageAt && !Number.isNaN(lastMessageAt.getTime())) {
+    auditLog.push({ label: "Requested additional info from requester", timestamp: lastMessageAt });
+  }
+  auditLog.push({
+    label: item.status === "RESOLVED" ? "Marked resolved by HR" : "Latest status update",
+    timestamp: updatedAt,
+  });
+
+  return {
+    id: String(item.request_id),
+    summary: item.summary.length > 60 ? `${item.summary.slice(0, 60)}...` : item.summary,
+    fullSummary: `${item.requester_name || item.requester_user_id}: ${item.description}`,
+    aiResponse: latestUpdate,
+    status: toAssignedPanelStatus(item.status, item.assignee_user_id),
+    priority: item.priority === "P0" ? "critical" : item.priority === "P1" ? "high" : "medium",
+    category: `${item.type} / ${item.subtype}`,
+    timestamp: createdAt,
+    lastUpdatedAt: updatedAt,
+    auditLog,
+  };
+}
+
+function pickCapturedString(
+  request: BackendHRRequest,
+  key: string
+): string | null {
+  const value = request.captured_fields?.[key];
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
+function buildHRRequestContextPrompt(request: BackendHRRequest): string {
+  const requester = request.requester_name || request.requester_user_id || "Employee";
+  const originalQuery =
+    pickCapturedString(request, "original_query") || request.description;
+  const assistantSuggestion =
+    pickCapturedString(request, "assistant_response") ||
+    pickCapturedString(request, "agent_suggestion") ||
+    request.resolution_text ||
+    request.last_message_to_requester ||
+    "";
+
+  return `I'm working on an assigned HR request. Here are the details:
+
+**Request ID:** ${request.request_id}
+**Requester:** ${requester}
+**Category:** ${request.type} / ${request.subtype}
+**Priority:** ${request.priority}
+**Status:** ${request.status}
+**Requester's Question:** "${originalQuery}"
+
+**Latest AI / Draft Context:**
+${assistantSuggestion || "(No draft response available)"}
+
+Help me handle this case. What should I do next, and what response should I send to the requester?`;
+}
+
 export default function HRChat() {
   const { user } = useAuth();
-  const { getAssignedTickets, getAssignedRequests, getTicketById, addResolutionNote, updateTicketStatus } = useHRTickets();
+  const { getTicketById, addResolutionNote, updateTicketStatus } = useHRTickets();
   const [searchParams, setSearchParams] = useSearchParams();
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversationMessages, setConversationMessages] = useState<Record<string, Message[]>>({});
@@ -198,6 +288,8 @@ export default function HRChat() {
   const [activeConversation, setActiveConversation] = useState<string | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeTicketId, setActiveTicketId] = useState<string | null>(null);
+  const [activeRequestId, setActiveRequestId] = useState<number | null>(null);
+  const [assignedRequests, setAssignedRequests] = useState<EscalatedRequest[]>([]);
   const [processedTickets, setProcessedTickets] = useState<Set<string>>(new Set());
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -205,8 +297,23 @@ export default function HRChat() {
 
   const displayName = user?.email?.split("@")[0] ?? "HR User";
   const capitalizedName = displayName.charAt(0).toUpperCase() + displayName.slice(1);
-  const assignedTickets = getAssignedTickets(displayName);
-  const assignedRequests = getAssignedRequests(displayName);
+
+  const loadAssignedRequests = useCallback(async () => {
+    if (!user?.email) return;
+    const rows = await fetchHRRequests(user.email);
+    const assignedRows = rows.filter(
+      (item) => (item.assignee_user_id || "").toLowerCase() === user.email.toLowerCase()
+    );
+    setAssignedRequests(
+      assignedRows
+        .map(mapAssignedHRRequestToPanel)
+        .sort(
+          (a, b) =>
+            (b.lastUpdatedAt || b.timestamp).getTime() -
+            (a.lastUpdatedAt || a.timestamp).getTime()
+        )
+    );
+  }, [user?.email]);
 
   const openDraftConversation = useCallback(() => {
     if (activeConversation && messages.length > 0) {
@@ -219,6 +326,8 @@ export default function HRChat() {
     setConversationMessages((cm) => ({ ...cm, [DRAFT_CONVERSATION_ID]: [] }));
     setMessages([]);
     setActiveConversation(DRAFT_CONVERSATION_ID);
+    setActiveTicketId(null);
+    setActiveRequestId(null);
     setInput("");
   }, [activeConversation, messages]);
 
@@ -268,6 +377,7 @@ export default function HRChat() {
             ),
           ];
         });
+        await loadAssignedRequests();
       } catch (error: any) {
         toast.error(error?.message || "Failed to load HR conversations");
       }
@@ -277,38 +387,132 @@ export default function HRChat() {
     return () => {
       cancelled = true;
     };
-  }, [user?.email]);
+  }, [user?.email, loadAssignedRequests]);
+
+  useEffect(() => {
+    if (!user?.email || !requestsOpen) return;
+    let stopped = false;
+
+    const refresh = async () => {
+      if (document.visibilityState !== "visible") return;
+      try {
+        await loadAssignedRequests();
+      } catch {
+        // Keep UI usable if refresh fails transiently.
+      }
+    };
+
+    void refresh();
+    const interval = window.setInterval(() => {
+      if (!stopped) void refresh();
+    }, 20000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(interval);
+    };
+  }, [user?.email, requestsOpen, loadAssignedRequests]);
+
+  useEffect(() => {
+    const sessionId = searchParams.get("session");
+    if (!sessionId || !user?.email) return;
+
+    setActiveTicketId(null);
+    setActiveRequestId(null);
+
+    if (activeConversation && messages.length > 0) {
+      setConversationMessages((cm) => ({ ...cm, [activeConversation]: messages }));
+    }
+    setActiveConversation(sessionId);
+
+    const existing = conversationMessages[sessionId];
+    if (existing) {
+      setMessages(existing);
+    } else {
+      setMessages([]);
+      void (async () => {
+        try {
+          const turns = await fetchSessionTurns(user.email, sessionId);
+          const loaded = mapTurnsToMessages(turns);
+          setConversationMessages((cm) => ({ ...cm, [sessionId]: loaded }));
+          if (activeConversationRef.current === sessionId) {
+            setMessages(loaded);
+          }
+        } catch (error: any) {
+          toast.error(error?.message || "Failed to load conversation history");
+        }
+      })();
+    }
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("session");
+    setSearchParams(nextParams, { replace: true });
+  }, [activeConversation, conversationMessages, messages, searchParams, setSearchParams, user?.email]);
 
   useEffect(() => {
     const shouldOpenNewConversation = searchParams.get("new") === "1";
     const ticketId = searchParams.get("ticket");
-    if (!shouldOpenNewConversation || ticketId) return;
+    const sessionId = searchParams.get("session");
+    if (!shouldOpenNewConversation || ticketId || sessionId) return;
 
     openDraftConversation();
     setActiveTicketId(null);
+    setActiveRequestId(null);
     setSearchParams({}, { replace: true });
   }, [openDraftConversation, searchParams, setSearchParams]);
 
   // Handle deep-link from HR Ops with ?ticket=ID
   useEffect(() => {
     const ticketId = searchParams.get("ticket");
-    if (ticketId && !processedTickets.has(ticketId)) {
-      const ticket = getTicketById(ticketId);
-      if (ticket) {
-        setActiveTicketId(ticketId);
-        setProcessedTickets((prev) => new Set(prev).add(ticketId));
-        // Clear the param so refreshing doesn't re-inject
-        setSearchParams({}, { replace: true });
+    const sessionId = searchParams.get("session");
+    if (!ticketId || sessionId || processedTickets.has(ticketId) || !user?.email) return;
+    setProcessedTickets((prev) => new Set(prev).add(ticketId));
+    // Clear the param so refreshing doesn't re-inject
+    setSearchParams({}, { replace: true });
 
-        // Auto-inject the context as a message and send to agent
-        const contextPrompt = buildTicketContextPrompt(ticket);
-        // Small delay to let the component mount
-        setTimeout(() => {
-          handleSendWithContext(contextPrompt, `ticket-${ticketId}`);
-        }, 300);
-      }
+    const parsedRequestId = Number(ticketId);
+    if (Number.isFinite(parsedRequestId)) {
+      void (async () => {
+        try {
+          const detail = await fetchHRRequestDetail(user.email, parsedRequestId);
+          setActiveRequestId(parsedRequestId);
+          setActiveTicketId(null);
+          const contextPrompt = buildHRRequestContextPrompt(detail.request);
+          setTimeout(() => {
+            void handleSendWithContext(contextPrompt, `request-${parsedRequestId}`);
+          }, 300);
+          await loadAssignedRequests();
+          return;
+        } catch {
+          // Fall back to legacy local ticket flow below.
+        }
+
+        const ticket = getTicketById(ticketId);
+        if (ticket) {
+          setActiveTicketId(ticketId);
+          setActiveRequestId(null);
+          const contextPrompt = buildTicketContextPrompt(ticket);
+          setTimeout(() => {
+            void handleSendWithContext(contextPrompt, `ticket-${ticketId}`);
+          }, 300);
+          return;
+        }
+
+        toast.error(`Request #${ticketId} was not found or is not assigned to you.`);
+      })();
+      return;
     }
-  }, [searchParams, processedTickets, getTicketById, setSearchParams]);
+
+    const ticket = getTicketById(ticketId);
+    if (ticket) {
+      setActiveTicketId(ticketId);
+      setActiveRequestId(null);
+      const contextPrompt = buildTicketContextPrompt(ticket);
+      setTimeout(() => {
+        void handleSendWithContext(contextPrompt, `ticket-${ticketId}`);
+      }, 300);
+    }
+  }, [searchParams, processedTickets, getTicketById, loadAssignedRequests, setSearchParams, user?.email]);
 
   // Helper to update messages and sync to conversationMessages
   const updateMessages = useCallback((convId: string | null, updater: (prev: Message[]) => Message[]) => {
@@ -415,7 +619,7 @@ export default function HRChat() {
             role: "assistant",
             content: "Sorry, I encountered an error. Please try again.",
             timestamp: new Date(),
-            confidence: "high",
+            confidence: "low",
           },
         ]);
       }
@@ -519,7 +723,7 @@ export default function HRChat() {
             role: "assistant",
             content: "Sorry, I encountered an error. Please try again.",
             timestamp: new Date(),
-            confidence: "high",
+            confidence: "low",
           },
         ]);
       }
@@ -557,6 +761,7 @@ export default function HRChat() {
   const handleNewConversation = () => {
     openDraftConversation();
     setActiveTicketId(null);
+    setActiveRequestId(null);
   };
 
   const handleDeleteConversation = async (id: string) => {
@@ -571,6 +776,7 @@ export default function HRChat() {
         setMessages([]);
         setActiveConversation(null);
         setActiveTicketId(null);
+        setActiveRequestId(null);
       }
       return;
     }
@@ -593,6 +799,7 @@ export default function HRChat() {
       setMessages([]);
       setActiveConversation(null);
       setActiveTicketId(null);
+      setActiveRequestId(null);
     }
   };
 
@@ -608,6 +815,7 @@ export default function HRChat() {
       setMessages([]);
       setActiveConversation(null);
       setActiveTicketId(null);
+      setActiveRequestId(null);
       return;
     }
 
@@ -624,6 +832,7 @@ export default function HRChat() {
       setMessages([]);
       setActiveConversation(null);
       setActiveTicketId(null);
+      setActiveRequestId(null);
       toast.success("All conversations cleared");
       return;
     }
@@ -642,6 +851,7 @@ export default function HRChat() {
       setMessages([]);
       setActiveConversation(null);
       setActiveTicketId(null);
+      setActiveRequestId(null);
     }
     toast.error(
       `${failedIds.length} conversation${failedIds.length === 1 ? "" : "s"} could not be deleted`
@@ -658,8 +868,8 @@ export default function HRChat() {
     toast.success(`Ticket moved to ${nextStatus.replace("_", " ")}`);
   };
 
-  const handleEscalate = async (msg: Message) => {
-    if (!user?.email) return;
+  const handleEscalate = async (msg: Message): Promise<boolean> => {
+    if (!user?.email) return false;
 
     const msgIdx = messages.findIndex((item) => item.id === msg.id);
     const userMsg = [...messages]
@@ -668,7 +878,7 @@ export default function HRChat() {
       .find((m) => m.role === "user");
     const originalQuery = (userMsg?.content || "").trim();
     const assistantResponse = msg.content.trim();
-    if (!assistantResponse) return;
+    if (!assistantResponse) return false;
 
     const summary = `HR chat quality escalation${
       originalQuery ? `: ${originalQuery.slice(0, 120)}` : ""
@@ -708,15 +918,20 @@ export default function HRChat() {
         throw new Error(result.error || "Escalation request creation failed");
       }
       toast.success(
-        `Escalated to HR Ops as internal improvement (#${result.request_id ?? "new"})`
+        `Escalated to HR Ops queue (#${result.request_id ?? "new"})`
       );
+      return true;
     } catch (error: any) {
       toast.error(error?.message || "Failed to escalate");
+      return false;
     }
   };
 
   const showWelcome = messages.length === 0 && !isTyping;
   const activeTicket = activeTicketId ? getTicketById(activeTicketId) : null;
+  const activeAssignedRequest = activeRequestId
+    ? assignedRequests.find((request) => Number(request.id) === activeRequestId) || null
+    : null;
 
   return (
     <div className="min-h-screen flex w-full">
@@ -727,7 +942,7 @@ export default function HRChat() {
         onNewConversation={handleNewConversation}
         onDeleteConversation={handleDeleteConversation}
         onClearAll={handleClearAll}
-        assignedCount={assignedTickets.length}
+        assignedCount={assignedRequests.length}
       />
 
       <main className="flex-1 flex flex-col min-w-0 h-screen">
@@ -735,7 +950,13 @@ export default function HRChat() {
           <div className="flex items-center gap-2">
             <span className="font-semibold text-base text-primary">PingHR</span>
             <span className="text-muted-foreground text-sm">/ HR Chat</span>
-            {activeTicket && (
+            {activeAssignedRequest && (
+              <Badge variant="outline" className="ml-2 text-xs gap-1 border-primary/20 text-primary">
+                <FileText className="h-3 w-3" />
+                Working on request #{activeAssignedRequest.id}
+              </Badge>
+            )}
+            {!activeAssignedRequest && activeTicket && (
               <Badge variant="outline" className="ml-2 text-xs gap-1 border-primary/20 text-primary">
                 <FileText className="h-3 w-3" />
                 Working on: {activeTicket.employee}'s request
@@ -749,16 +970,16 @@ export default function HRChat() {
             onClick={() => setRequestsOpen(true)}
           >
             <Mail className="h-4 w-4" />
-            My Requests
-            {assignedTickets.length > 0 && (
+            My Assigned
+            {assignedRequests.length > 0 && (
               <span className="ml-1 h-5 min-w-5 px-1 rounded-full bg-destructive text-destructive-foreground text-[10px] font-bold flex items-center justify-center">
-                {assignedTickets.length}
+                {assignedRequests.length}
               </span>
             )}
           </Button>
         </header>
 
-        {activeTicket && (
+        {!activeAssignedRequest && activeTicket && (
           <TicketActionBar
             ticket={activeTicket}
             onMoveToNext={handleMoveTicketToNext}
@@ -791,9 +1012,7 @@ export default function HRChat() {
                 <ChatMessageBubble
                   key={msg.id}
                   msg={msg}
-                  onEscalate={(message) => {
-                    void handleEscalate(message);
-                  }}
+                  onEscalate={handleEscalate}
                   showEscalate
                 />
               ))}
@@ -836,7 +1055,14 @@ export default function HRChat() {
         </div>
       </main>
 
-      <MyRequestsPanel isOpen={requestsOpen} onClose={() => setRequestsOpen(false)} requests={assignedRequests} />
+      <MyRequestsPanel
+        isOpen={requestsOpen}
+        onClose={() => setRequestsOpen(false)}
+        requests={assignedRequests}
+        title="My Assigned Tickets"
+        subtitle={`${assignedRequests.length} assigned tickets`}
+        emptyStateMessage="No assigned tickets yet. Pick up requests from HR Ops."
+      />
     </div>
   );
 }
