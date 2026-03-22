@@ -11,7 +11,7 @@ import functools
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 from enum import Enum
 
 
@@ -143,9 +143,9 @@ class MetricsCollector:
         tag_str = ",".join(f"{k}={v}" for k, v in sorted(tags.items()))
         return f"{name}[{tag_str}]"
 
-    def get_stats(self) -> dict:
+    def get_stats(self) -> dict[str, Any]:
         """Get current metric statistics."""
-        stats = {
+        stats: dict[str, Any] = {
             "counters": dict(self._counters),
             "gauges": dict(self._gauges),
             "histograms": {},

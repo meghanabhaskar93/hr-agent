@@ -48,11 +48,11 @@ class BaseRepository(ABC):
         eng = self._get_engine()
         with eng.begin() as con:
             con.execute(text(query), params or {})
-            return con.execute(text("SELECT last_insert_rowid()")).scalar_one()
+            return int(con.execute(text("SELECT last_insert_rowid()")).scalar_one())
 
     def _execute_update(self, query: str, params: dict | None = None) -> int:
         """Execute an update and return rows affected."""
         eng = self._get_engine()
         with eng.begin() as con:
             result = con.execute(text(query), params or {})
-            return result.rowcount
+            return int(result.rowcount or 0)

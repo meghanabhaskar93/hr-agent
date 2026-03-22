@@ -8,7 +8,8 @@ class Settings(BaseSettings):
     demo_user_email: str = Field(
         default="alex.kim@acme.com", validation_alias="DEMO_USER_EMAIL"
     )
-    db_url: str = Field(default="sqlite:///./hr_demo.db", validation_alias="DB_URL")
+    # Optional explicit override for local/testing only.
+    db_url: str = Field(default="", validation_alias="DB_URL")
     turso_database_url: str = Field(default="", validation_alias="TURSO_DATABASE_URL")
     turso_auth_token: str = Field(default="", validation_alias="TURSO_AUTH_TOKEN")
     allowed_test_user_emails: str = Field(
@@ -39,7 +40,23 @@ settings = Settings()
 
 
 _langfuse_handler = None
-_langfuse_client = None
+
+
+def _langfuse_is_enabled() -> bool:
+    return bool(
+        settings.langfuse_enabled
+        and settings.langfuse_public_key
+        and settings.langfuse_secret_key
+    )
+
+
+def _configure_langfuse_environment() -> None:
+    import os
+
+    # Langfuse v3+ reads from environment variables.
+    os.environ.setdefault("LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key)
+    os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)
+    os.environ.setdefault("LANGFUSE_HOST", settings.langfuse_host)
 
 
 def get_langfuse_handler():
@@ -54,50 +71,15 @@ def get_langfuse_handler():
     if _langfuse_handler is not None:
         return _langfuse_handler
 
-    if not settings.langfuse_enabled:
-        return None
-    if not settings.langfuse_public_key or not settings.langfuse_secret_key:
+    if not _langfuse_is_enabled():
         return None
 
-    import os
     try:
         from langfuse.langchain import CallbackHandler
     except ModuleNotFoundError:
         return None
 
-    # Langfuse v3+ reads from environment variables
-    # Set them temporarily if not already set
-    os.environ.setdefault("LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key)
-    os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)
-    os.environ.setdefault("LANGFUSE_HOST", settings.langfuse_host)
+    _configure_langfuse_environment()
 
     _langfuse_handler = CallbackHandler()
     return _langfuse_handler
-
-
-def get_langfuse_client():
-    """Create a Langfuse client for custom scoring/events.
-
-    Returns None when Langfuse is not configured.
-    """
-    global _langfuse_client
-    if _langfuse_client is not None:
-        return _langfuse_client
-
-    if not settings.langfuse_enabled:
-        return None
-    if not settings.langfuse_public_key or not settings.langfuse_secret_key:
-        return None
-
-    import os
-    try:
-        from langfuse import Langfuse
-    except ModuleNotFoundError:
-        return None
-
-    os.environ.setdefault("LANGFUSE_PUBLIC_KEY", settings.langfuse_public_key)
-    os.environ.setdefault("LANGFUSE_SECRET_KEY", settings.langfuse_secret_key)
-    os.environ.setdefault("LANGFUSE_HOST", settings.langfuse_host)
-
-    _langfuse_client = Langfuse()
-    return _langfuse_client

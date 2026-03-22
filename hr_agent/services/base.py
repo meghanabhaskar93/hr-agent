@@ -14,6 +14,12 @@ from datetime import datetime, date, timedelta
 from functools import cmp_to_key
 from typing import Any
 from ..repositories import (
+    EmployeeRepository,
+    HolidayRepository,
+    CompensationRepository,
+    CompanyRepository,
+    EscalationRepository,
+    HRRequestRepository,
     get_employee_repo,
     get_holiday_repo,
     get_compensation_repo,
@@ -31,8 +37,8 @@ from ..repositories import (
 class EmployeeService:
     """Service for employee and organization operations."""
 
-    def __init__(self):
-        self.repo = get_employee_repo()
+    def __init__(self) -> None:
+        self.repo: EmployeeRepository = get_employee_repo()
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
         """Search employees by name, email, or title."""
@@ -105,8 +111,8 @@ class EmployeeService:
 class HolidayService:
     """Service for holiday/time-off operations."""
 
-    def __init__(self):
-        self.repo = get_holiday_repo()
+    def __init__(self) -> None:
+        self.repo: HolidayRepository = get_holiday_repo()
 
     def get_balance(self, employee_id: int, year: int) -> dict:
         """Get holiday balance for an employee."""
@@ -254,8 +260,8 @@ class HolidayService:
 class CompensationService:
     """Service for compensation operations."""
 
-    def __init__(self):
-        self.repo = get_compensation_repo()
+    def __init__(self) -> None:
+        self.repo: CompensationRepository = get_compensation_repo()
 
     def get_compensation(self, employee_id: int) -> dict | None:
         """Get compensation details for an employee."""
@@ -278,8 +284,8 @@ class CompensationService:
 class CompanyService:
     """Service for company-wide information."""
 
-    def __init__(self):
-        self.repo = get_company_repo()
+    def __init__(self) -> None:
+        self.repo: CompanyRepository = get_company_repo()
 
     def get_policies(self) -> list[dict]:
         """Get list of company policies."""
@@ -312,16 +318,16 @@ class EscalationService:
 
     ALLOWED_STATUSES = {"PENDING", "IN_REVIEW", "RESOLVED"}
     ALLOWED_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-    ALLOWED_TRANSITIONS = {
+    ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "PENDING": {"IN_REVIEW"},
         "IN_REVIEW": {"RESOLVED"},
         "RESOLVED": {"IN_REVIEW"},
     }
     TRIAGE_ROLES = {"HR", "MANAGER"}
 
-    def __init__(self):
-        self.repo = get_escalation_repo()
-        self.employee_repo = get_employee_repo()
+    def __init__(self) -> None:
+        self.repo: EscalationRepository = get_escalation_repo()
+        self.employee_repo: EmployeeRepository = get_employee_repo()
 
     def _get_viewer_role(self, viewer_email: str) -> str:
         return self.employee_repo.get_role_by_email(viewer_email)
@@ -715,14 +721,14 @@ class HRRequestService:
     TERMINAL_STATUSES = {"RESOLVED", "CANCELLED"}
     ALLOWED_PRIORITIES = {"P0", "P1", "P2"}
     ALLOWED_RISK_LEVELS = {"HIGH", "MED", "LOW"}
-    ALLOWED_TRANSITIONS = {
+    ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "NEW": {"NEEDS_INFO", "READY", "IN_PROGRESS", "ESCALATED", "CANCELLED"},
         "NEEDS_INFO": {"READY", "IN_PROGRESS", "ESCALATED", "CANCELLED"},
         "READY": {"IN_PROGRESS", "NEEDS_INFO", "RESOLVED", "ESCALATED", "CANCELLED"},
         "IN_PROGRESS": {"NEEDS_INFO", "READY", "RESOLVED", "ESCALATED", "CANCELLED"},
         "ESCALATED": {"IN_PROGRESS", "NEEDS_INFO", "RESOLVED", "CANCELLED"},
         "RESOLVED": {"IN_PROGRESS"},
-        "CANCELLED": set(),
+        "CANCELLED": set[str](),
     }
     AUTO_PROGRESS_ON_ASSIGN_STATUSES = {"NEW", "NEEDS_INFO", "READY", "ESCALATED"}
     TRIAGE_ROLES = {"HR", "MANAGER"}
@@ -788,9 +794,9 @@ class HRRequestService:
         },
     ]
 
-    def __init__(self):
-        self.repo = get_hr_request_repo()
-        self.employee_repo = get_employee_repo()
+    def __init__(self) -> None:
+        self.repo: HRRequestRepository = get_hr_request_repo()
+        self.employee_repo: EmployeeRepository = get_employee_repo()
 
     def _get_viewer_role(self, viewer_email: str) -> str:
         return self.employee_repo.get_role_by_email(viewer_email)
@@ -1260,8 +1266,8 @@ class HRRequestService:
                 "error": "Only a different HR reviewer can resolve HR-raised requests.",
             }
 
-        current = existing.get("status", "NEW")
-        allowed = self.ALLOWED_TRANSITIONS.get(current, set())
+        current = str(existing.get("status") or "NEW")
+        allowed = self.ALLOWED_TRANSITIONS.get(current, set[str]())
         if normalized not in allowed:
             return {
                 "success": False,

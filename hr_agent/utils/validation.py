@@ -7,7 +7,7 @@ Prevents injection attacks, validates formats, and sanitizes data.
 
 import re
 from datetime import datetime, date
-from typing import Any
+from typing import Any, Callable
 from dataclasses import dataclass
 
 
@@ -267,7 +267,9 @@ def validate_action_params(func):
         from .errors import ValidationError
 
         # Validate based on action type
-        validators_map = {
+        validators_map: dict[
+            str, list[tuple[str, Callable[[Any], ValidationResult]]]
+        ] = {
             "search_employee": [
                 ("employee_query", lambda v: Validators.validate_search_query(v or "")),
             ],
@@ -292,14 +294,16 @@ def validate_action_params(func):
             ],
         }
 
-        if action.action in validators_map:
-            for field_name, validator in validators_map[action.action]:
-                value = getattr(action, field_name, None)
-                result = validator(value)
-                if not result.is_valid:
-                    raise ValidationError(
-                        result.error_message, field=field_name, value=value
-                    )
+        action_name = str(getattr(action, "action", ""))
+        for field_name, validator in validators_map.get(action_name, []):
+            value = getattr(action, field_name, None)
+            result = validator(value)
+            if not result.is_valid:
+                raise ValidationError(
+                    result.error_message or f"Invalid value for {field_name}",
+                    field=field_name,
+                    value=value,
+                )
 
         return func(self, action, *args, **kwargs)
 

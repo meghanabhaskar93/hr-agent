@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api import server
+from hr_agent.configs.config import settings
+from hr_agent.utils import db as db_utils
+
+
+@pytest.fixture(autouse=True)
+def _use_local_sqlite_for_api_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "access_control.db"
+    monkeypatch.setattr(settings, "turso_database_url", "")
+    monkeypatch.setattr(settings, "turso_auth_token", "")
+    monkeypatch.setattr(settings, "db_url", f"sqlite:///{db_path}")
+    db_utils._engine = None
+    yield
+    db_utils._engine = None
 
 
 def test_allowlist_blocks_non_member(monkeypatch):
@@ -52,4 +68,3 @@ def test_allowlist_allows_member(monkeypatch):
         assert response.json()["email"] == "amanda.foster@acme.com"
 
     server.get_allowed_test_user_emails.cache_clear()
-

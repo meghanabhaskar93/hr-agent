@@ -19,7 +19,7 @@ import uvicorn
 import uuid
 from functools import lru_cache
 
-from hr_agent.agent.langgraph_agent import HRAgentLangGraph, run_hr_agent
+from hr_agent.agent.langgraph_agent import run_hr_agent
 from hr_agent.seed import seed_if_needed
 from hr_agent.configs.config import settings
 from hr_agent.utils.security import rate_limiter, audit_logger, AuditAction
@@ -1255,11 +1255,12 @@ async def detailed_health_check():
     """Detailed health check with dependency status."""
     from hr_agent.utils.db import get_engine
 
-    health = {
+    checks: dict[str, dict[str, Any]] = {}
+    health: dict[str, Any] = {
         "status": "healthy",
         "timestamp": datetime.now().isoformat(),
         "version": "2.0.0",
-        "checks": {},
+        "checks": checks,
     }
 
     # Check database
@@ -1267,13 +1268,13 @@ async def detailed_health_check():
         engine = get_engine()
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        health["checks"]["database"] = {"status": "healthy"}
+        checks["database"] = {"status": "healthy"}
     except (SQLAlchemyError, OSError) as e:
-        health["checks"]["database"] = {"status": "unhealthy", "error": str(e)}
+        checks["database"] = {"status": "unhealthy", "error": str(e)}
         health["status"] = "degraded"
 
     # Check LLM
-    health["checks"]["llm"] = {
+    checks["llm"] = {
         "status": "configured",
         "model": settings.llm_model,
         "provider": settings.llm_provider,
@@ -1281,12 +1282,12 @@ async def detailed_health_check():
 
     # Check Langfuse tracing
     if settings.langfuse_enabled and settings.langfuse_public_key:
-        health["checks"]["langfuse"] = {
+        checks["langfuse"] = {
             "status": "enabled",
             "host": settings.langfuse_host,
         }
     else:
-        health["checks"]["langfuse"] = {"status": "disabled"}
+        checks["langfuse"] = {"status": "disabled"}
 
     return health
 

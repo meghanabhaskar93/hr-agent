@@ -44,11 +44,6 @@ npm install
 npm run dev
 ```
 
-```bash
-# Optional: run the Streamlit UI instead
-uv run streamlit run apps/web/app.py
-```
-
 ### Run Now (React UI + API)
 
 Use this flow if you want the current TypeScript UI with chat history improvements.
@@ -62,7 +57,7 @@ uv run uvicorn apps.api.server:app --reload
 cd apps/web-ts
 npm run dev
 ```
-3. Open `http://localhost:8080`.
+3. Open `http://localhost:5173`.
 4. Ensure `VITE_API_BASE_URL=http://127.0.0.1:8000` in `apps/web-ts/.env` (or your shell env).
 
 ### Chat History Titles
@@ -243,12 +238,12 @@ LLM_PROVIDER=openai_compatible
 LLM_API_KEY=sk-...
 LLM_MODEL=gpt-4o-mini
 
-# Database (default local SQLite)
-DB_URL=sqlite:///./hr_demo.db
-
-# Turso (optional; when set, app uses this remote DB and persists across redeploys)
+# Database (Turso recommended for persistence across restarts/redeploys)
 TURSO_DATABASE_URL=
 TURSO_AUTH_TOKEN=
+
+# Optional local/testing override
+# DB_URL=sqlite:///./hr_demo.db
 
 # Optional: restrict public test deployment to specific emails
 ALLOWED_TEST_USER_EMAILS=amanda.foster@acme.com,jordan.lee@acme.com
@@ -264,9 +259,9 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 
 ```
 
-### Turso Persistence (Optional)
+### Turso Persistence
 
-If you want DB state to survive Render redeploys/restarts:
+Use Turso so DB state survives Render redeploys/restarts:
 
 1. Create a Turso database and auth token.
 2. Set backend env vars:
@@ -286,7 +281,8 @@ python scripts/migrate_sqlite_to_turso.py \
 ```
 
 Notes:
-- `TURSO_DATABASE_URL` takes precedence over `DB_URL`.
+- `TURSO_DATABASE_URL` is the primary production DB setting.
+- `DB_URL` is supported as an explicit local/testing override.
 - In-memory chat sessions are still process-local unless separately persisted.
 
 ### Using uv
@@ -323,7 +319,7 @@ uv sync
 uv sync --group dev
 
 # Run commands
-uv run streamlit run apps/web/app.py
+uv run uvicorn apps.api.server:app --reload
 uv run pytest
 uv run ruff check .
 ```

@@ -55,6 +55,7 @@ import {
   type BackendHRRequest,
   type BackendHRRequestDetail,
 } from "@/lib/backend";
+import { getErrorMessage } from "@/lib/error";
 
 type Priority = "P0" | "P1" | "P2";
 type Status =
@@ -457,8 +458,8 @@ export default function HROps() {
       try {
         const rows = await fetchHRRequests(user.email);
         if (!cancelled) setItems(rows);
-      } catch (error: any) {
-        toast.error(error?.message || "Failed to load HR queue");
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, "Failed to load HR queue"));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -512,8 +513,8 @@ export default function HROps() {
     if (isExpanded || detailById[requestId]) return;
     try {
       await loadDetail(requestId);
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to load request detail");
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Failed to load request detail"));
     }
   };
 
@@ -531,8 +532,8 @@ export default function HROps() {
         await loadRequests();
       }
       return true;
-    } catch (error: any) {
-      toast.error(error?.message || "Action failed");
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Action failed"));
       return false;
     }
   };

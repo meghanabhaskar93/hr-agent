@@ -32,8 +32,8 @@ In Render -> `pinghr-api` -> `Environment`:
 - Set `LLM_API_KEY` (required).
 - Set `LLM_BASE_URL` if using OpenAI-compatible non-default endpoint.
 - Update `ALLOWED_TEST_USER_EMAILS` to your tester list (comma-separated).
-- Optional but recommended for persistence across redeploys:
-  - `TURSO_DATABASE_URL`
+- Set Turso DB credentials for persistent data:
+  - `TURSO_DATABASE_URL` (required for deployment persistence)
   - `TURSO_AUTH_TOKEN`
 
 Example:

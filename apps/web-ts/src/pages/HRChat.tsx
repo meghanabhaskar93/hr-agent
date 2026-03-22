@@ -24,6 +24,8 @@ import {
   type BackendHRRequest,
   type BackendSessionTurn,
 } from "@/lib/backend";
+import { getErrorMessage } from "@/lib/error";
+import { mapHRRequestToPanel } from "@/lib/hrRequestPanel";
 import { toast } from "sonner";
 import type { Conversation } from "@/components/ConversationSidebar";
 
@@ -157,7 +159,7 @@ async function streamChat({
     const response = await sendChat(userEmail, latestUserMessage, sessionId);
     onDelta(response.response);
   } catch (error) {
-    toast.error(error instanceof Error ? error.message : "Chat request failed");
+    toast.error(getErrorMessage(error, "Chat request failed"));
     throw error;
   } finally {
     onDone();
@@ -187,57 +189,6 @@ function buildTicketContextPrompt(ticket: {
 ${ticket.aiDraft}
 
 Help me review this case. Is the AI draft accurate? Are there any policy nuances I should consider? What's the best way to handle this?`;
-}
-
-function toAssignedPanelStatus(
-  status: BackendHRRequest["status"],
-  assigneeUserId?: string | null
-): EscalatedRequest["status"] {
-  if (status === "RESOLVED" || status === "CANCELLED") return "resolved";
-  if (status === "NEEDS_INFO") return "in_review";
-  if (status === "IN_PROGRESS" || status === "ESCALATED") return "in_progress";
-  if (assigneeUserId) return "assigned";
-  return "pending";
-}
-
-function mapAssignedHRRequestToPanel(item: BackendHRRequest): EscalatedRequest {
-  const createdAt = new Date(item.created_at);
-  const updatedAt = new Date(item.updated_at);
-  const lastMessageAt = item.last_message_at ? new Date(item.last_message_at) : null;
-  const hasHrMessage =
-    typeof item.last_message_to_requester === "string" &&
-    item.last_message_to_requester.trim().length > 0;
-  const latestUpdate =
-    item.last_message_to_requester ||
-    item.resolution_text ||
-    (typeof item.captured_fields?.agent_suggestion === "string"
-      ? item.captured_fields.agent_suggestion
-      : null) ||
-    "No latest update has been recorded yet.";
-
-  const auditLog: { label: string; timestamp: Date }[] = [
-    { label: "Request created", timestamp: createdAt },
-  ];
-  if (hasHrMessage && lastMessageAt && !Number.isNaN(lastMessageAt.getTime())) {
-    auditLog.push({ label: "Requested additional info from requester", timestamp: lastMessageAt });
-  }
-  auditLog.push({
-    label: item.status === "RESOLVED" ? "Marked resolved by HR" : "Latest status update",
-    timestamp: updatedAt,
-  });
-
-  return {
-    id: String(item.request_id),
-    summary: item.summary.length > 60 ? `${item.summary.slice(0, 60)}...` : item.summary,
-    fullSummary: `${item.requester_name || item.requester_user_id}: ${item.description}`,
-    aiResponse: latestUpdate,
-    status: toAssignedPanelStatus(item.status, item.assignee_user_id),
-    priority: item.priority === "P0" ? "critical" : item.priority === "P1" ? "high" : "medium",
-    category: `${item.type} / ${item.subtype}`,
-    timestamp: createdAt,
-    lastUpdatedAt: updatedAt,
-    auditLog,
-  };
 }
 
 function pickCapturedString(
@@ -306,7 +257,13 @@ export default function HRChat() {
     );
     setAssignedRequests(
       assignedRows
-        .map(mapAssignedHRRequestToPanel)
+        .map((request) =>
+          mapHRRequestToPanel(request, {
+            latestUpdateFallback: "No latest update has been recorded yet.",
+            hrMessageLabel: "Requested additional info from requester",
+            includeRequesterInSummary: true,
+          })
+        )
         .sort(
           (a, b) =>
             (b.lastUpdatedAt || b.timestamp).getTime() -
@@ -378,8 +335,8 @@ export default function HRChat() {
           ];
         });
         await loadAssignedRequests();
-      } catch (error: any) {
-        toast.error(error?.message || "Failed to load HR conversations");
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, "Failed to load HR conversations"));
       }
     };
 
@@ -438,8 +395,8 @@ export default function HRChat() {
           if (activeConversationRef.current === sessionId) {
             setMessages(loaded);
           }
-        } catch (error: any) {
-          toast.error(error?.message || "Failed to load conversation history");
+        } catch (error: unknown) {
+          toast.error(getErrorMessage(error, "Failed to load conversation history"));
         }
       })();
     }
@@ -512,6 +469,9 @@ export default function HRChat() {
         void handleSendWithContext(contextPrompt, `ticket-${ticketId}`);
       }, 300);
     }
+    // handleSendWithContext is intentionally excluded here because this deep-link
+    // effect should only react to route/state changes, not callback identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams, processedTickets, getTicketById, loadAssignedRequests, setSearchParams, user?.email]);
 
   // Helper to update messages and sync to conversationMessages
@@ -535,8 +495,8 @@ export default function HRChat() {
       try {
         const sessionInfo = await createSession(user.email);
         convId = sessionInfo.session_id;
-      } catch (error: any) {
-        toast.error(error?.message || "Failed to create conversation");
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, "Failed to create conversation"));
         return;
       }
     }
@@ -636,8 +596,8 @@ export default function HRChat() {
       try {
         const sessionInfo = await createSession(user.email);
         convId = sessionInfo.session_id;
-      } catch (error: any) {
-        toast.error(error?.message || "Failed to create conversation");
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, "Failed to create conversation"));
         return;
       }
       setConversations((prev) => {
@@ -752,8 +712,8 @@ export default function HRChat() {
         if (activeConversationRef.current === id) {
           setMessages(loaded);
         }
-      } catch (error: any) {
-        toast.error(error?.message || "Failed to load conversation history");
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, "Failed to load conversation history"));
       }
     })();
   };
@@ -783,8 +743,8 @@ export default function HRChat() {
     if (!user?.email) return;
     try {
       await deleteSession(user.email, id);
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to delete conversation");
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Failed to delete conversation"));
       return;
     }
 
@@ -863,8 +823,9 @@ export default function HRChat() {
     const ticket = getTicketById(activeTicketId);
     if (!ticket) return;
     addResolutionNote(activeTicketId, note, tag);
-    const nextStatus = ticket.status === "in_progress" ? "in_review" : "resolved";
-    updateTicketStatus(activeTicketId, nextStatus as any);
+    const nextStatus: Parameters<typeof updateTicketStatus>[1] =
+      ticket.status === "in_progress" ? "in_review" : "resolved";
+    updateTicketStatus(activeTicketId, nextStatus);
     toast.success(`Ticket moved to ${nextStatus.replace("_", " ")}`);
   };
 
@@ -921,8 +882,8 @@ export default function HRChat() {
         `Escalated to HR Ops queue (#${result.request_id ?? "new"})`
       );
       return true;
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to escalate");
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Failed to escalate"));
       return false;
     }
   };

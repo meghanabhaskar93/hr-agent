@@ -467,7 +467,7 @@ class HRAgentLangGraph:
             for msg in reversed(messages):
                 if isinstance(msg, AIMessage) and msg.content:
                     self._message_history.append(msg)
-                    return msg.content
+                    return msg.content if isinstance(msg.content, str) else str(msg.content)
 
             return "I'm sorry, I couldn't process your request."
 
@@ -543,7 +543,7 @@ class HRAgentLangGraph:
     class _SessionCompat:
         def __init__(self, agent: "HRAgentLangGraph"):
             self._agent = agent
-            self.turns = []
+            self.turns: list[dict[str, Any]] = []
 
         def get_context(self, key: str):
             if key == "tools_called":
