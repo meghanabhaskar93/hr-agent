@@ -37,6 +37,12 @@ def _bootstrap_evals_package():
     analysis = _load_module("evals.analysis", "evals/analysis.py")
     runner = _load_module("evals.runner", "evals/runner.py")
 
+    package.metrics = metrics
+    package.datasets = datasets
+    package.logger = logger
+    package.analysis = analysis
+    package.runner = runner
+
     return analysis, datasets, logger, metrics, runner
 
 

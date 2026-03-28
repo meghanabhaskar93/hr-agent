@@ -244,7 +244,7 @@ def test_run_evals_main_uses_quick_limit_sample_and_exits_zero(monkeypatch):
 
     assert excinfo.value.code == 0
     runner_dataset = captured["dataset"]
-    assert isinstance(runner_dataset, EvalDataset)
+    assert isinstance(runner_dataset, module.EvalDataset)
     assert runner_dataset.name == "quick_ds_limit_3_sample_2_seed_11_offset_1"
     assert len(runner_dataset.cases) == 2
     assert {case.id for case in runner_dataset.cases}.issubset({"case-0", "case-1", "case-2"})
