@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api.server import app, get_current_user
+from hr_agent.configs.config import settings
+from hr_agent.utils import db as db_utils
 
 
 class _FakeHRRequestService:
@@ -219,6 +224,17 @@ def _override_user():
     }
 
 
+@pytest.fixture(autouse=True)
+def _use_local_sqlite_for_api_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "api_hr_requests.db"
+    monkeypatch.setattr(settings, "turso_database_url", "")
+    monkeypatch.setattr(settings, "turso_auth_token", "")
+    monkeypatch.setattr(settings, "db_url", f"sqlite:///{db_path}")
+    db_utils._engine = None
+    yield
+    db_utils._engine = None
+
+
 def test_hr_request_endpoints_list_counts_create_detail_and_status(monkeypatch):
     fake_service = _FakeHRRequestService()
     monkeypatch.setattr("apps.api.server.get_hr_request_service", lambda: fake_service)
@@ -355,6 +371,16 @@ def test_hr_request_http_error_mapping(monkeypatch):
         }
         denied = client.post("/hr-requests/1/status", json={"new_status": "IN_PROGRESS"})
         assert denied.status_code == 403
+
+        fake_service.status_result = {
+            "success": False,
+            "error": "Only a different HR reviewer can resolve HR-raised requests.",
+        }
+        self_resolve_denied = client.post(
+            "/hr-requests/1/status",
+            json={"new_status": "RESOLVED"},
+        )
+        assert self_resolve_denied.status_code == 403
 
         fake_service.status_result = {
             "success": False,

@@ -236,6 +236,118 @@ class EscalationRepository(BaseRepository):
             "resolved": int(row.get("resolved") or 0),
         }
 
+    def list_category_counts_for_month(
+        self,
+        month: str,
+        requester_email: str | None = None,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Return top escalation categories for a YYYY-MM month window."""
+        query = """
+            SELECT
+              COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized') AS category,
+              COUNT(*) AS count
+            FROM hr_escalation_request
+            WHERE substr(created_at, 1, 7) = :month
+        """
+        params: dict[str, str | int] = {"month": month, "limit": limit}
+
+        if requester_email:
+            query += " AND requester_email = :requester_email"
+            params["requester_email"] = requester_email
+
+        query += """
+            GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized')
+            ORDER BY count DESC, category ASC
+            LIMIT :limit
+        """
+        rows = self._execute_query(query, params)
+        return [
+            {
+                "category": str(row.get("category") or "Uncategorized"),
+                "count": int(row.get("count") or 0),
+            }
+            for row in rows
+        ]
+
+    def count_for_month(
+        self,
+        month: str,
+        requester_email: str | None = None,
+    ) -> int:
+        """Return total escalations for a YYYY-MM month window."""
+        query = """
+            SELECT COUNT(*) AS total
+            FROM hr_escalation_request
+            WHERE substr(created_at, 1, 7) = :month
+        """
+        params: dict[str, str] = {"month": month}
+        if requester_email:
+            query += " AND requester_email = :requester_email"
+            params["requester_email"] = requester_email
+        row = self._execute_query_one(query, params)
+        return int((row or {}).get("total") or 0)
+
+    def list_status_counts_for_month(
+        self,
+        month: str,
+        requester_email: str | None = None,
+    ) -> dict:
+        """Return month-level status counts for escalations."""
+        query = """
+            SELECT
+              COUNT(*) AS total,
+              SUM(CASE WHEN status='PENDING' THEN 1 ELSE 0 END) AS pending,
+              SUM(CASE WHEN status='IN_REVIEW' THEN 1 ELSE 0 END) AS in_review,
+              SUM(CASE WHEN status='RESOLVED' THEN 1 ELSE 0 END) AS resolved
+            FROM hr_escalation_request
+            WHERE substr(created_at, 1, 7) = :month
+        """
+        params: dict[str, str] = {"month": month}
+        if requester_email:
+            query += " AND requester_email = :requester_email"
+            params["requester_email"] = requester_email
+        row = self._execute_query_one(query, params)
+        if not row:
+            return {"total": 0, "pending": 0, "in_review": 0, "resolved": 0}
+        return {
+            "total": int(row.get("total") or 0),
+            "pending": int(row.get("pending") or 0),
+            "in_review": int(row.get("in_review") or 0),
+            "resolved": int(row.get("resolved") or 0),
+        }
+
+    def list_category_status_counts_for_month(
+        self,
+        month: str,
+        requester_email: str | None = None,
+    ) -> list[dict]:
+        """Return per-category status counts for a YYYY-MM month window."""
+        query = """
+            SELECT
+              COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized') AS category,
+              status,
+              COUNT(*) AS count
+            FROM hr_escalation_request
+            WHERE substr(created_at, 1, 7) = :month
+        """
+        params: dict[str, str] = {"month": month}
+        if requester_email:
+            query += " AND requester_email = :requester_email"
+            params["requester_email"] = requester_email
+        query += """
+            GROUP BY COALESCE(NULLIF(TRIM(category), ''), 'Uncategorized'), status
+        """
+        rows = self._execute_query(query, params)
+        return [
+            {
+                "category": str(row.get("category") or "Uncategorized"),
+                "status": str(row.get("status") or "PENDING"),
+                "count": int(row.get("count") or 0),
+            }
+            for row in rows
+        ]
+
     def create_with_event(
         self,
         requester_employee_id: int,

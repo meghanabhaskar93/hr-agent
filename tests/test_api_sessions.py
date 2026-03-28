@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api import server
 from apps.api.server import app, get_current_user
+from hr_agent.configs.config import settings
+from hr_agent.utils import db as db_utils
 
 
 def _override_user():

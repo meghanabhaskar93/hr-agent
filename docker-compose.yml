@@ -1,5 +1,5 @@
 # HR Agent - Docker Compose for Local Development
-version: '3.8'
+version: "3.8"
 
 services:
   # API Server
@@ -11,12 +11,12 @@ services:
     environment:
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+      - TURSO_DATABASE_URL=${TURSO_DATABASE_URL:-}
+      - TURSO_AUTH_TOKEN=${TURSO_AUTH_TOKEN:-}
       - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
       - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
       - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
       - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
-    volumes:
-      - ./hr_demo.db:/app/hr_demo.db
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -24,22 +24,18 @@ services:
       retries: 3
     restart: unless-stopped
 
-  # Streamlit UI
-  ui:
-    build: .
-    container_name: hr-agent-ui
-    command: ["uv", "run", "streamlit", "run", "apps/web/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+  # React + TypeScript UI (Vite dev server)
+  web:
+    image: node:20-alpine
+    container_name: hr-agent-web
+    working_dir: /app/apps/web-ts
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
     ports:
-      - "8501:8501"
+      - "5173:5173"
     environment:
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
-      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      - VITE_API_BASE_URL=${VITE_API_BASE_URL:-http://localhost:8000}
     volumes:
-      - ./hr_demo.db:/app/hr_demo.db
+      - ./:/app
     depends_on:
       api:
         condition: service_healthy

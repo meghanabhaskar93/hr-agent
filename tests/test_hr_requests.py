@@ -158,6 +158,46 @@ def test_hr_request_service_permissions_transitions_and_audit(tmp_path: Path):
     assert created["success"] is True
     request_id = created["request_id"]
 
+    hr_created = service.create_request(
+        requester_user_id="amanda.foster@acme.com",
+        requester_role="HR",
+        request_type="HR",
+        request_subtype="ESCALATION",
+        summary="Internal HR quality check",
+        description="Need peer review for internal escalation handling.",
+        priority="P1",
+        risk_level="MED",
+    )
+    assert hr_created["success"] is True
+    hr_request_id = hr_created["request_id"]
+
+    hr_assigned_to_self = service.assign_request(
+        viewer_email="amanda.foster@acme.com",
+        request_id=hr_request_id,
+        assignee_user_id="amanda.foster@acme.com",
+    )
+    assert hr_assigned_to_self["success"] is True
+    hr_assigned_row = repo.get_by_id(hr_request_id)
+    assert hr_assigned_row is not None
+    assert hr_assigned_row["status"] == "IN_PROGRESS"
+
+    self_resolve_denied = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        request_id=hr_request_id,
+        new_status="RESOLVED",
+        resolution_text="Self-resolving internal request.",
+    )
+    assert self_resolve_denied["success"] is False
+    assert "different HR reviewer" in self_resolve_denied["error"]
+
+    resolved_by_peer_hr = service.transition_status(
+        viewer_email="james.wilson@acme.com",
+        request_id=hr_request_id,
+        new_status="RESOLVED",
+        resolution_text="Peer-reviewed and resolved.",
+    )
+    assert resolved_by_peer_hr["success"] is True
+
     denied_assign = service.assign_request(
         viewer_email="alex.kim@acme.com",
         request_id=request_id,
@@ -274,8 +314,8 @@ def test_hr_request_service_permissions_transitions_and_audit(tmp_path: Path):
     assert "Invalid transition" in invalid_transition["error"]
 
     hr_counts = service.list_counts("amanda.foster@acme.com")
-    assert hr_counts["total"] == 2
-    assert hr_counts["resolved"] == 1
+    assert hr_counts["total"] == 3
+    assert hr_counts["resolved"] == 2
     assert hr_counts["new"] == 1
 
     requester_counts = service.list_counts("alex.kim@acme.com")

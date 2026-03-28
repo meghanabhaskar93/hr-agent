@@ -32,6 +32,9 @@ In Render -> `pinghr-api` -> `Environment`:
 - Set `LLM_API_KEY` (required).
 - Set `LLM_BASE_URL` if using OpenAI-compatible non-default endpoint.
 - Update `ALLOWED_TEST_USER_EMAILS` to your tester list (comma-separated).
+- Set Turso DB credentials for persistent data:
+  - `TURSO_DATABASE_URL` (required for deployment persistence)
+  - `TURSO_AUTH_TOKEN`
 
 Example:
 
@@ -40,6 +43,17 @@ amanda.foster@acme.com,jordan.lee@acme.com,alex.kim@acme.com
 ```
 
 Only these emails can access the API.
+
+### Optional: Migrate Existing Local SQLite Data to Turso
+
+If you already have data in local `hr_demo.db`, migrate once before switching Render to Turso:
+
+```bash
+python scripts/migrate_sqlite_to_turso.py \
+  --source ./hr_demo.db \
+  --target-url "$TURSO_DATABASE_URL" \
+  --target-token "$TURSO_AUTH_TOKEN"
+```
 
 ## 4. Point UI To Real API URL
 
@@ -78,3 +92,4 @@ This gives an external access gate in addition to the API email allowlist.
 
 - Render free services may spin down when idle.
 - Current session/chat memory is in-process and not durable across restarts.
+- Turso persistence covers database-backed entities (requests, escalations, employees, policies, etc.).

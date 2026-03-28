@@ -184,3 +184,15 @@ rules:
       - get_announcements
       - get_upcoming_events
     condition: "True"
+
+  # ============================================================================
+  # HR OPS ANALYTICS POLICIES
+  # ============================================================================
+
+  - name: "view_escalation_analytics"
+    description: "Managers and HR can view escalation analytics"
+    effect: "allow"
+    priority: 20
+    actions:
+      - get_top_escalation_categories
+    condition: "is_manager"

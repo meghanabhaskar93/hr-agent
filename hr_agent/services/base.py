@@ -14,6 +14,12 @@ from datetime import datetime, date, timedelta
 from functools import cmp_to_key
 from typing import Any
 from ..repositories import (
+    EmployeeRepository,
+    HolidayRepository,
+    CompensationRepository,
+    CompanyRepository,
+    EscalationRepository,
+    HRRequestRepository,
     get_employee_repo,
     get_holiday_repo,
     get_compensation_repo,
@@ -31,8 +37,8 @@ from ..repositories import (
 class EmployeeService:
     """Service for employee and organization operations."""
 
-    def __init__(self):
-        self.repo = get_employee_repo()
+    def __init__(self) -> None:
+        self.repo: EmployeeRepository = get_employee_repo()
 
     def search(self, query: str, limit: int = 10) -> list[dict]:
         """Search employees by name, email, or title."""
@@ -105,8 +111,8 @@ class EmployeeService:
 class HolidayService:
     """Service for holiday/time-off operations."""
 
-    def __init__(self):
-        self.repo = get_holiday_repo()
+    def __init__(self) -> None:
+        self.repo: HolidayRepository = get_holiday_repo()
 
     def get_balance(self, employee_id: int, year: int) -> dict:
         """Get holiday balance for an employee."""
@@ -254,8 +260,8 @@ class HolidayService:
 class CompensationService:
     """Service for compensation operations."""
 
-    def __init__(self):
-        self.repo = get_compensation_repo()
+    def __init__(self) -> None:
+        self.repo: CompensationRepository = get_compensation_repo()
 
     def get_compensation(self, employee_id: int) -> dict | None:
         """Get compensation details for an employee."""
@@ -278,8 +284,8 @@ class CompensationService:
 class CompanyService:
     """Service for company-wide information."""
 
-    def __init__(self):
-        self.repo = get_company_repo()
+    def __init__(self) -> None:
+        self.repo: CompanyRepository = get_company_repo()
 
     def get_policies(self) -> list[dict]:
         """Get list of company policies."""
@@ -312,16 +318,16 @@ class EscalationService:
 
     ALLOWED_STATUSES = {"PENDING", "IN_REVIEW", "RESOLVED"}
     ALLOWED_PRIORITIES = {"LOW", "MEDIUM", "HIGH", "CRITICAL"}
-    ALLOWED_TRANSITIONS = {
+    ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "PENDING": {"IN_REVIEW"},
         "IN_REVIEW": {"RESOLVED"},
         "RESOLVED": {"IN_REVIEW"},
     }
     TRIAGE_ROLES = {"HR", "MANAGER"}
 
-    def __init__(self):
-        self.repo = get_escalation_repo()
-        self.employee_repo = get_employee_repo()
+    def __init__(self) -> None:
+        self.repo: EscalationRepository = get_escalation_repo()
+        self.employee_repo: EmployeeRepository = get_employee_repo()
 
     def _get_viewer_role(self, viewer_email: str) -> str:
         return self.employee_repo.get_role_by_email(viewer_email)
@@ -401,6 +407,82 @@ class EscalationService:
         if self._is_triage_role(viewer_email, viewer_role):
             return self.repo.list_counts_for_requester(None)
         return self.repo.list_counts_for_requester(viewer_email)
+
+    def get_top_categories(self, month: str | None = None, limit: int = 5) -> dict:
+        """Return escalation category analytics for the requested month."""
+        normalized_month = (month or datetime.now().strftime("%Y-%m")).strip()
+        try:
+            datetime.strptime(normalized_month, "%Y-%m")
+        except ValueError:
+            return {"error": "Invalid month format. Use YYYY-MM."}
+
+        safe_limit = max(1, min(int(limit), 20))
+        rows = self.repo.list_category_counts_for_month(
+            month=normalized_month,
+            requester_email=None,
+            limit=safe_limit,
+        )
+        status_counts = self.repo.list_status_counts_for_month(
+            month=normalized_month,
+            requester_email=None,
+        )
+        total = int(status_counts.get("total") or 0)
+        per_category_status_rows = self.repo.list_category_status_counts_for_month(
+            month=normalized_month,
+            requester_email=None,
+        )
+        per_category_status: dict[str, dict[str, int]] = {}
+        for row in per_category_status_rows:
+            category = row.get("category", "Uncategorized")
+            status = str(row.get("status") or "PENDING").upper()
+            count = int(row.get("count") or 0)
+            bucket = per_category_status.setdefault(
+                category,
+                {"pending": 0, "in_review": 0, "resolved": 0},
+            )
+            if status == "PENDING":
+                bucket["pending"] += count
+            elif status == "IN_REVIEW":
+                bucket["in_review"] += count
+            elif status == "RESOLVED":
+                bucket["resolved"] += count
+        categories: list[dict[str, Any]] = []
+        for row in rows:
+            status_bucket = per_category_status.get(
+                row["category"],
+                {"pending": 0, "in_review": 0, "resolved": 0},
+            )
+            categories.append(
+                {
+                    "category": row["category"],
+                    "count": row["count"],
+                    "percentage": round((row["count"] / total) * 100, 1)
+                    if total > 0
+                    else 0.0,
+                    "status_breakdown": status_bucket,
+                    "open_count": status_bucket["pending"] + status_bucket["in_review"],
+                    "resolved_count": status_bucket["resolved"],
+                }
+            )
+        shown_count = sum(int(row["count"]) for row in rows)
+        resolved_total = int(status_counts.get("resolved") or 0)
+        return {
+            "month": normalized_month,
+            "total_escalations": total,
+            "status_breakdown": {
+                "pending": int(status_counts.get("pending") or 0),
+                "in_review": int(status_counts.get("in_review") or 0),
+                "resolved": resolved_total,
+            },
+            "open_escalations": int(status_counts.get("pending") or 0)
+            + int(status_counts.get("in_review") or 0),
+            "resolution_rate_percent": round((resolved_total / total) * 100, 1)
+            if total > 0
+            else 0.0,
+            "top_categories_limit": safe_limit,
+            "other_categories_count": max(total - shown_count, 0),
+            "categories": categories,
+        }
 
     def get_request_detail(self, viewer_email: str, escalation_id: int) -> dict:
         """Fetch escalation request detail with timeline and completeness metadata."""
@@ -639,14 +721,14 @@ class HRRequestService:
     TERMINAL_STATUSES = {"RESOLVED", "CANCELLED"}
     ALLOWED_PRIORITIES = {"P0", "P1", "P2"}
     ALLOWED_RISK_LEVELS = {"HIGH", "MED", "LOW"}
-    ALLOWED_TRANSITIONS = {
+    ALLOWED_TRANSITIONS: dict[str, set[str]] = {
         "NEW": {"NEEDS_INFO", "READY", "IN_PROGRESS", "ESCALATED", "CANCELLED"},
         "NEEDS_INFO": {"READY", "IN_PROGRESS", "ESCALATED", "CANCELLED"},
         "READY": {"IN_PROGRESS", "NEEDS_INFO", "RESOLVED", "ESCALATED", "CANCELLED"},
         "IN_PROGRESS": {"NEEDS_INFO", "READY", "RESOLVED", "ESCALATED", "CANCELLED"},
         "ESCALATED": {"IN_PROGRESS", "NEEDS_INFO", "RESOLVED", "CANCELLED"},
         "RESOLVED": {"IN_PROGRESS"},
-        "CANCELLED": set(),
+        "CANCELLED": set[str](),
     }
     AUTO_PROGRESS_ON_ASSIGN_STATUSES = {"NEW", "NEEDS_INFO", "READY", "ESCALATED"}
     TRIAGE_ROLES = {"HR", "MANAGER"}
@@ -712,9 +794,9 @@ class HRRequestService:
         },
     ]
 
-    def __init__(self):
-        self.repo = get_hr_request_repo()
-        self.employee_repo = get_employee_repo()
+    def __init__(self) -> None:
+        self.repo: HRRequestRepository = get_hr_request_repo()
+        self.employee_repo: EmployeeRepository = get_employee_repo()
 
     def _get_viewer_role(self, viewer_email: str) -> str:
         return self.employee_repo.get_role_by_email(viewer_email)
@@ -1169,8 +1251,23 @@ class HRRequestService:
         existing = self.repo.get_by_id(request_id)
         if not existing:
             return {"success": False, "error": "HR request not found."}
-        current = existing.get("status", "NEW")
-        allowed = self.ALLOWED_TRANSITIONS.get(current, set())
+
+        requester_role = str(existing.get("requester_role") or "").upper()
+        requester_user_id = str(existing.get("requester_user_id") or "").strip().lower()
+        viewer_normalized = viewer_email.strip().lower()
+        if (
+            normalized == "RESOLVED"
+            and requester_role == "HR"
+            and requester_user_id
+            and requester_user_id == viewer_normalized
+        ):
+            return {
+                "success": False,
+                "error": "Only a different HR reviewer can resolve HR-raised requests.",
+            }
+
+        current = str(existing.get("status") or "NEW")
+        allowed = self.ALLOWED_TRANSITIONS.get(current, set[str]())
         if normalized not in allowed:
             return {
                 "success": False,

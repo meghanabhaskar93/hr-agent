@@ -2,7 +2,6 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { Bot, User, ThumbsUp, ThumbsDown, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { toast } from "sonner";
 
 interface Message {
   id: string;
@@ -15,7 +14,7 @@ interface Message {
 
 interface ChatMessageBubbleProps {
   msg: Message;
-  onEscalate: (msg: Message) => void;
+  onEscalate: (msg: Message) => Promise<boolean | void> | boolean | void;
   onFeedback?: (msgId: string, feedback: "up" | "down") => void;
   showEscalate?: boolean;
 }
@@ -23,6 +22,7 @@ interface ChatMessageBubbleProps {
 export default function ChatMessageBubble({ msg, onEscalate, onFeedback, showEscalate = true }: ChatMessageBubbleProps) {
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
   const [isEscalated, setIsEscalated] = useState(msg.escalated ?? false);
+  const [isEscalating, setIsEscalating] = useState(false);
 
   const handleThumbsDown = () => {
     setFeedback("down");
@@ -34,10 +34,17 @@ export default function ChatMessageBubble({ msg, onEscalate, onFeedback, showEsc
     onFeedback?.(msg.id, "up");
   };
 
-  const handleEscalate = () => {
-    setIsEscalated(true);
-    onEscalate(msg);
-    toast.success("Escalated to HR Ops — check My Requests for updates.");
+  const handleEscalate = async () => {
+    if (isEscalated || isEscalating) return;
+    setIsEscalating(true);
+    try {
+      const result = await onEscalate(msg);
+      if (result !== false) {
+        setIsEscalated(true);
+      }
+    } finally {
+      setIsEscalating(false);
+    }
   };
 
   return (
@@ -100,7 +107,7 @@ export default function ChatMessageBubble({ msg, onEscalate, onFeedback, showEsc
             </button>
 
             {/* Escalate button appears after thumbs down — only for employee chat */}
-            {feedback === "down" && showEscalate && (
+            {(feedback === "down" || msg.confidence === "low") && showEscalate && (
               <motion.div
                 initial={{ opacity: 0, x: -8 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -109,10 +116,11 @@ export default function ChatMessageBubble({ msg, onEscalate, onFeedback, showEsc
                   size="sm"
                   variant="outline"
                   className="h-7 ml-1 gap-1.5 text-xs border-destructive/30 text-destructive hover:bg-destructive/5"
-                  onClick={handleEscalate}
+                  onClick={() => void handleEscalate()}
+                  disabled={isEscalating}
                 >
                   <AlertTriangle className="h-3 w-3" />
-                  Escalate to HR
+                  {isEscalating ? "Escalating..." : "Escalate to HR"}
                 </Button>
               </motion.div>
             )}
