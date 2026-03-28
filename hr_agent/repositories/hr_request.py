@@ -29,9 +29,7 @@ class HRRequestRepository(BaseRepository):
         except json.JSONDecodeError:
             return fallback
 
-    def _deserialize_row(self, row: dict | None) -> dict | None:
-        if not row:
-            return None
+    def _deserialize_row(self, row: dict[str, Any]) -> dict[str, Any]:
         result = dict(row)
         result["required_fields"] = self._json_loads(
             result.pop("required_fields_json", None), []
@@ -251,6 +249,8 @@ class HRRequestRepository(BaseRepository):
                WHERE r.request_id = :request_id""",
             {"request_id": request_id},
         )
+        if row is None:
+            return None
         return self._deserialize_row(row)
 
     def list_for_requester(
@@ -308,7 +308,7 @@ class HRRequestRepository(BaseRepository):
             LIMIT :limit
         """
         rows = self._execute_query(query, params)
-        return [self._deserialize_row(row) for row in rows if row]
+        return [self._deserialize_row(row) for row in rows]
 
     def list_counts_for_requester(self, requester_user_id: str | None = None) -> dict:
         """Return aggregate status counts."""

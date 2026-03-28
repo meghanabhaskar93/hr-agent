@@ -5,7 +5,7 @@ A flexible, rule-based authorization system inspired by Open Policy Agent (OPA).
 Policies are defined declaratively and can be updated without code changes.
 """
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from pathlib import Path
 from dataclasses import dataclass, field
 from enum import Enum

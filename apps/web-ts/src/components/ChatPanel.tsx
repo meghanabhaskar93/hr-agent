@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Send, X, Bot, User, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -84,22 +84,7 @@ export default function ChatPanel({ isOpen, onClose, initialPrompt }: ChatPanelP
   const inputRef = useRef<HTMLInputElement>(null);
   const processedPromptRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    if (isOpen && initialPrompt && initialPrompt !== processedPromptRef.current) {
-      processedPromptRef.current = initialPrompt;
-      handleSend(initialPrompt);
-    }
-  }, [isOpen, initialPrompt]);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
-
-  useEffect(() => {
-    if (isOpen) inputRef.current?.focus();
-  }, [isOpen]);
-
-  const handleSend = (text?: string) => {
+  const handleSend = useCallback((text?: string) => {
     const msg = text || input.trim();
     if (!msg) return;
 
@@ -127,7 +112,22 @@ export default function ChatPanel({ isOpen, onClose, initialPrompt }: ChatPanelP
       setMessages((prev) => [...prev, assistantMsg]);
       setIsTyping(false);
     }, 800 + Math.random() * 700);
-  };
+  }, [input]);
+
+  useEffect(() => {
+    if (isOpen && initialPrompt && initialPrompt !== processedPromptRef.current) {
+      processedPromptRef.current = initialPrompt;
+      handleSend(initialPrompt);
+    }
+  }, [handleSend, isOpen, initialPrompt]);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  useEffect(() => {
+    if (isOpen) inputRef.current?.focus();
+  }, [isOpen]);
 
   return (
     <AnimatePresence>

@@ -3,6 +3,7 @@ Employee Repository - Employee and Organization data access
 """
 
 from datetime import datetime, date
+from typing import cast
 from .base import BaseRepository
 
 
@@ -44,8 +45,12 @@ class EmployeeRepository(BaseRepository):
 
     def get_cost_center(self, employee_id: int) -> str | None:
         """Get employee's cost center."""
-        return self._execute_scalar(
-            "SELECT cost_center FROM employee WHERE employee_id=:e", {"e": employee_id}
+        return cast(
+            str | None,
+            self._execute_scalar(
+                "SELECT cost_center FROM employee WHERE employee_id=:e",
+                {"e": employee_id},
+            ),
         )
 
     def get_tenure(self, employee_id: int) -> dict | None:
@@ -189,8 +194,12 @@ class EmployeeRepository(BaseRepository):
 
     def get_employee_id_by_email(self, email: str) -> int | None:
         """Get employee ID from email via identity map."""
-        return self._execute_scalar(
-            "SELECT employee_id FROM identity_map WHERE user_email=:u", {"u": email}
+        return cast(
+            int | None,
+            self._execute_scalar(
+                "SELECT employee_id FROM identity_map WHERE user_email=:u",
+                {"u": email},
+            ),
         )
 
     def get_role_by_email(self, email: str) -> str:

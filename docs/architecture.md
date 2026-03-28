@@ -20,7 +20,7 @@
 %%{init: {'theme': 'neutral'}}%%
 graph TB
     subgraph Clients["🖥️ Client Layer"]
-        UI[Streamlit UI]
+        UI[React + Vite Web UI]
         API[FastAPI Server]
         CLI[CLI Tools]
     end
@@ -40,7 +40,7 @@ graph TB
 
     subgraph Infra["🏗️ Infrastructure"]
         Config[Config BaseSettings]
-        DB[(SQLite Database)]
+        DB[(Turso / SQL Database)]
         Langfuse[Langfuse Tracing]
     end
 
@@ -224,7 +224,7 @@ class EmployeeRepository(BaseRepository):
 %%{init: {'theme': 'neutral'}}%%
 sequenceDiagram
     participant User
-    participant UI as Streamlit UI
+    participant UI as Web UI
     participant Agent as HRAgentLangGraph
     participant LLM as ChatOpenAI
     participant Auth as Policy Engine

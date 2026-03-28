@@ -13,7 +13,7 @@ These decorators eliminate boilerplate code in service and tool implementations.
 
 import functools
 import time
-from typing import Callable, TypeVar, ParamSpec, Any
+from typing import Callable, TypeVar, ParamSpec, Any, cast
 
 from ..tracing.observability import logger, metrics, timed  # noqa: F401 (re-exported)
 from .errors import ValidationError
@@ -179,7 +179,7 @@ def cache_result(ttl_seconds: int = 300, key_func: Callable[..., str] | None = N
                 value, expiry = cache[key]
                 if time.time() < expiry:
                     metrics.increment("cache.hit", tags={"function": func.__name__})
-                    return value
+                    return cast(T, value)
                 else:
                     del cache[key]
 
@@ -303,7 +303,7 @@ def sanitize_output(*fields_to_mask: str):
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             result = func(*args, **kwargs)
-            return _mask_fields(result, fields_to_mask)
+            return cast(T, _mask_fields(result, fields_to_mask))
 
         return wrapper
 
