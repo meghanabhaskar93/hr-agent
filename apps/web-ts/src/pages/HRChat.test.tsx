@@ -13,6 +13,8 @@ const { toast, backend, authState, ticketState } = vi.hoisted(() => ({
     createHRRequest: vi.fn(),
     createSession: vi.fn(),
     deleteSession: vi.fn(),
+    fetchHRRequestDetail: vi.fn(),
+    fetchHRRequests: vi.fn(),
     fetchSessions: vi.fn(),
     fetchSessionTurns: vi.fn(),
     sendChat: vi.fn(),
@@ -112,6 +114,34 @@ describe("HRChat page", () => {
       },
     ]);
     backend.fetchSessionTurns.mockResolvedValue([]);
+    backend.fetchHRRequests.mockResolvedValue([
+      {
+        request_id: 42,
+        tenant_id: "default",
+        requester_user_id: "jordan.lee@acme.com",
+        requester_role: "EMPLOYEE",
+        requester_name: "Jordan Lee",
+        requester_department: "Engineering",
+        requester_title: "Engineer",
+        type: "HR",
+        subtype: "ESCALATION",
+        summary: "Need leave guidance",
+        description: "Jordan asked for leave guidance.",
+        priority: "P1",
+        risk_level: "MED",
+        status: "NEW",
+        assignee_user_id: "mina.patel@acme.com",
+        assignee_name: "mina.patel",
+        required_fields: [],
+        captured_fields: {},
+        missing_fields: [],
+        created_at: "2026-03-21T09:00:00Z",
+        updated_at: "2026-03-21T09:00:00Z",
+        last_action_at: "2026-03-21T09:00:00Z",
+        resolution_sources: [],
+      },
+    ]);
+    backend.fetchHRRequestDetail.mockResolvedValue(null);
     backend.createSession.mockResolvedValue({
       session_id: "session-2",
       created_at: "2026-03-21T10:00:00Z",
@@ -138,9 +168,11 @@ describe("HRChat page", () => {
     await waitFor(() =>
       expect(backend.fetchSessions).toHaveBeenCalledWith("mina.patel@acme.com")
     );
-    expect(screen.getByTestId("hr-sidebar")).toHaveTextContent("assigned:1");
+    await waitFor(() =>
+      expect(screen.getByTestId("hr-sidebar")).toHaveTextContent("assigned:1")
+    );
     expect(
-      screen.getByRole("button", { name: /My Requests/i })
+      screen.getByRole("button", { name: /My Assigned/i })
     ).toHaveTextContent("1");
     expect(
       screen.getByText("Working on: Jordan Lee's request")
