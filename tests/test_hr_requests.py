@@ -460,3 +460,309 @@ def test_hr_request_service_triage_queue_derives_effective_status_and_filtering(
     assert len(needs_info_only) == 1
     assert needs_info_only[0]["request_id"] == needs_info_created["request_id"]
     assert needs_info_only[0]["status"] == "NEEDS_INFO"
+
+
+def test_hr_request_service_helper_methods_and_edge_cases(tmp_path: Path):
+    repo = _TestHRRequestRepository(_build_engine(tmp_path))
+    service = HRRequestService()
+    service.repo = repo
+    service.employee_repo = _FakeEmployeeRepo(
+        {
+            "alex.kim@acme.com": "EMPLOYEE",
+            "amanda.foster@acme.com": "HR",
+            "james.wilson@acme.com": "HR",
+            "emma.thompson@acme.com": "EMPLOYEE",
+        }
+    )
+
+    assert service._normalize_required_fields(None) == service.DEFAULT_REQUIRED_FIELDS
+    assert service._normalize_required_fields([" summary ", "summary", "", "type"]) == [
+        "summary",
+        "type",
+    ]
+
+    missing = service._compute_missing_fields(
+        ["summary", "description", "files", "metadata"],
+        {"summary": "ok", "description": "   ", "files": [], "metadata": {}},
+    )
+    assert missing == ["description", "files", "metadata"]
+
+    assert service._normalize_taxonomy_value("payroll / tax-adjustment", "GENERAL") == "PAYROLL___TAX_ADJUSTMENT"
+    assert service._normalize_taxonomy_value(" ", "GENERAL") == "GENERAL"
+
+    assert service._to_datetime("2026-03-21T10:00:00") is not None
+    assert service._to_datetime("not-a-date") is None
+    assert service._default_sla_hours("P0", "LOW") == 24
+    assert service._default_sla_hours("P2", "HIGH") == 24
+
+    resolved_sla = service._resolve_sla_due_at(
+        priority="P1",
+        risk_level="MED",
+        requested_sla_due_at=None,
+        created_at="2026-03-01T00:00:00",
+    )
+    assert resolved_sla.startswith("2026-03-04T00:00:00")
+
+    assert service._is_ready_like("READY") is True
+    assert service._is_ready_like("IN_PROGRESS") is True
+    assert service._is_ready_like("NEEDS_INFO") is False
+
+    assert (
+        service._should_keep_needs_info_ahead(
+            {"priority": "P0", "sla_due_at": "2026-03-01T10:00:00"},
+            {"priority": "P1", "sla_due_at": "2026-03-02T10:00:00"},
+        )
+        is True
+    )
+    assert (
+        service._should_keep_needs_info_ahead(
+            {"priority": "P1", "sla_due_at": "2026-03-01T10:00:00"},
+            {"priority": "P0", "sla_due_at": "2026-03-02T10:00:00"},
+        )
+        is False
+    )
+
+    ready_row = {
+        "request_id": 2,
+        "priority": "P0",
+        "risk_level": "HIGH",
+        "sla_due_at": "2026-03-01T10:00:00",
+        "status": "READY",
+        "created_at": "2026-02-01T10:00:00",
+    }
+    needs_info_row = {
+        "request_id": 3,
+        "priority": "P0",
+        "risk_level": "HIGH",
+        "sla_due_at": "2026-03-02T10:00:00",
+        "status": "NEEDS_INFO",
+        "created_at": "2026-02-01T11:00:00",
+    }
+    assert service._compare_queue_rows(ready_row, needs_info_row) == -1
+
+    applied = service._apply_queue_defaults(
+        {
+            "request_id": 4,
+            "priority": "P1",
+            "risk_level": "MED",
+            "status": "NEW",
+            "missing_fields": [],
+            "created_at": "2026-03-01T10:00:00",
+            "sla_due_at": None,
+        }
+    )
+    assert applied["status"] == "READY"
+    assert applied["sla_due_at"] is not None
+
+    invalid_priority = service.create_request(
+        requester_user_id="alex.kim@acme.com",
+        requester_role="EMPLOYEE",
+        request_type="GENERAL",
+        request_subtype="GENERAL",
+        summary="Hello",
+        description="Need help",
+        priority="PX",
+    )
+    assert invalid_priority["success"] is False
+    assert "invalid priority" in invalid_priority["error"].lower()
+
+    invalid_risk = service.create_request(
+        requester_user_id="alex.kim@acme.com",
+        requester_role="EMPLOYEE",
+        request_type="GENERAL",
+        request_subtype="GENERAL",
+        summary="Hello",
+        description="Need help",
+        risk_level="SEVERE",
+    )
+    assert invalid_risk["success"] is False
+    assert "invalid risk level" in invalid_risk["error"].lower()
+
+    missing_text = service.create_request(
+        requester_user_id="alex.kim@acme.com",
+        requester_role="EMPLOYEE",
+        request_type="GENERAL",
+        request_subtype="GENERAL",
+        summary="   ",
+        description="   ",
+    )
+    assert missing_text["success"] is False
+    assert "summary and description are required" in missing_text["error"].lower()
+
+    request = service.create_request(
+        requester_user_id="alex.kim@acme.com",
+        requester_role="EMPLOYEE",
+        request_type="GENERAL",
+        request_subtype="GENERAL",
+        summary="Need general help",
+        description="Need more information.",
+    )
+    assert request["success"] is True
+    request_id = request["request_id"]
+
+    assert service.list_requests("amanda.foster@acme.com", status="INVALID") == []
+    requester_list = service.list_requests("alex.kim@acme.com", status="NEW")
+    assert len(requester_list) == 1
+    assert requester_list[0]["request_id"] == request_id
+
+    assert service.get_request_detail("emma.thompson@acme.com", request_id)["success"] is False
+
+    assign_missing = service.assign_request(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        assignee_user_id="missing@acme.com",
+    )
+    assert assign_missing["success"] is False
+    assert "assignee not found" in assign_missing["error"].lower()
+
+    invalid_priority_update = service.update_priority(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        priority="PX",
+    )
+    assert invalid_priority_update["success"] is False
+    assert "invalid priority" in invalid_priority_update["error"].lower()
+
+    invalid_status = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        new_status="DONE",
+    )
+    assert invalid_status["success"] is False
+    assert "invalid status" in invalid_status["error"].lower()
+
+    missing_transition = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        request_id=9999,
+        new_status="READY",
+    )
+    assert missing_transition["success"] is False
+    assert "not found" in missing_transition["error"].lower()
+
+    empty_message = service.message_requester(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        message="   ",
+    )
+    assert empty_message["success"] is False
+    assert "cannot be empty" in empty_message["error"].lower()
+
+    empty_reply = service.reply_as_requester(
+        viewer_email="alex.kim@acme.com",
+        request_id=request_id,
+        message="   ",
+    )
+    assert empty_reply["success"] is False
+    assert "cannot be empty" in empty_reply["error"].lower()
+
+    closed = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        new_status="CANCELLED",
+    )
+    assert closed["success"] is True
+
+    message_closed = service.message_requester(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        message="Need more info",
+    )
+    assert message_closed["success"] is False
+    assert "closed request" in message_closed["error"].lower()
+
+    reply_closed = service.reply_as_requester(
+        viewer_email="alex.kim@acme.com",
+        request_id=request_id,
+        message="Here you go",
+    )
+    assert reply_closed["success"] is False
+    assert "closed request" in reply_closed["error"].lower()
+
+    capture_closed = service.capture_fields(
+        viewer_email="alex.kim@acme.com",
+        request_id=request_id,
+        captured_fields={"extra": "value"},
+    )
+    assert capture_closed["success"] is False
+    assert "closed request" in capture_closed["error"].lower()
+
+
+def test_hr_request_service_capture_fields_and_escalation_paths(tmp_path: Path):
+    repo = _TestHRRequestRepository(_build_engine(tmp_path))
+    service = HRRequestService()
+    service.repo = repo
+    service.employee_repo = _FakeEmployeeRepo(
+        {
+            "alex.kim@acme.com": "EMPLOYEE",
+            "amanda.foster@acme.com": "HR",
+            "james.wilson@acme.com": "HR",
+            "emma.thompson@acme.com": "EMPLOYEE",
+        }
+    )
+
+    created = service.create_request(
+        requester_user_id="alex.kim@acme.com",
+        requester_role="EMPLOYEE",
+        request_type="ESCALATION",
+        request_subtype="POLICY",
+        summary="Need policy clarification",
+        description="Need details for a policy exception.",
+        required_fields=["summary", "description", "requester_user_id", "type", "subtype", "details"],
+    )
+    assert created["success"] is True
+    request_id = created["request_id"]
+
+    first_capture = service.capture_fields(
+        viewer_email="alex.kim@acme.com",
+        request_id=request_id,
+        captured_fields={"details": ""},
+    )
+    assert first_capture["success"] is True
+    assert first_capture["status"] == "NEEDS_INFO"
+    assert "details" in first_capture["missing_fields"]
+
+    second_capture = service.capture_fields(
+        viewer_email="alex.kim@acme.com",
+        request_id=request_id,
+        captured_fields={"details": "Manager approved exception note"},
+    )
+    assert second_capture["success"] is True
+    assert second_capture["status"] == "READY"
+    assert second_capture["missing_fields"] == []
+
+    hidden_capture = service.capture_fields(
+        viewer_email="emma.thompson@acme.com",
+        request_id=request_id,
+        captured_fields={"details": "nope"},
+    )
+    assert hidden_capture["success"] is False
+    assert "not found" in hidden_capture["error"].lower()
+
+    escalated = service.escalate_request(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        escalation_ticket_id="POL-77",
+        note="Need policy board review.",
+    )
+    assert escalated["success"] is True
+
+    row = repo.get_by_id(request_id)
+    assert row is not None
+    assert row["status"] == "ESCALATED"
+    assert row["escalation_ticket_id"] == "POL-77"
+
+    reopen = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        new_status="IN_PROGRESS",
+    )
+    assert reopen["success"] is True
+
+    resolved = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        request_id=request_id,
+        new_status="RESOLVED",
+        resolution_text="Policy board approved exception.",
+        resolution_sources=["Policy Handbook"],
+    )
+    assert resolved["success"] is True

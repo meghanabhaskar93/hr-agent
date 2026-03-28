@@ -284,6 +284,180 @@ def test_escalation_service_permissions_actions_and_transitions(tmp_path: Path):
     assert len(employee_view) == 1
     assert employee_view[0]["requester_email"] == "alex.kim@acme.com"
 
+def test_escalation_service_edge_cases_and_helper_paths(tmp_path: Path):
+    repo = _TestEscalationRepository(_build_engine(tmp_path))
+    service = EscalationService()
+    service.repo = repo
+    service.employee_repo = _FakeEmployeeRepo(
+        {
+            "alex.kim@acme.com": "EMPLOYEE",
+            "victoria.adams@acme.com": "MANAGER",
+            "amanda.foster@acme.com": "HR",
+            "james.wilson@acme.com": "HR",
+        }
+    )
+
+    invalid_create = service.create_request(
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
+        thread_id="thread-invalid",
+        source_message_excerpt="Need help",
+        priority="urgent",
+    )
+    assert invalid_create["success"] is False
+    assert "invalid priority" in invalid_create["error"].lower()
+
+    escalation_id = repo.create(
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
+        thread_id="thread-edge",
+        source_message_excerpt="Need manual review.",
+    )
+
+    assert service._is_triage_role("amanda.foster@acme.com") is True
+    assert service._is_triage_role("alex.kim@acme.com") is False
+
+    visible_to_hr = service._get_visible_request("amanda.foster@acme.com", escalation_id)
+    assert visible_to_hr is not None
+    assert visible_to_hr["escalation_id"] == escalation_id
+    assert service._get_visible_request("james.wilson@acme.com", escalation_id) is not None
+    assert service._get_visible_request("nobody@acme.com", escalation_id) is None
+
+    missing_fields = service._compute_missing_fields(
+        {
+            "priority": "MEDIUM",
+            "category": None,
+            "assigned_to_email": "",
+            "agent_suggestion": "Review with HRBP",
+        }
+    )
+    assert missing_fields == ["category", "assigned_to_email"]
+
+    assert service.list_requests("amanda.foster@acme.com", status="INVALID") == []
+    assert service.list_requests("alex.kim@acme.com", status="INVALID") == []
+
+    assign_unknown = service.assign_request(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        assignee_email="missing@acme.com",
+    )
+    assert assign_unknown["success"] is False
+    assert "assignee not found" in assign_unknown["error"].lower()
+
+    assign_missing = service.assign_request(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=9999,
+        assignee_email="james.wilson@acme.com",
+    )
+    assert assign_missing["success"] is False
+    assert "not found" in assign_missing["error"].lower()
+
+    unassign = service.assign_request(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        assignee_email=None,
+    )
+    assert unassign["success"] is True
+
+    invalid_priority = service.update_priority(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        priority="P0",
+    )
+    assert invalid_priority["success"] is False
+    assert "invalid priority" in invalid_priority["error"].lower()
+
+    missing_priority_target = service.update_priority(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=9999,
+        priority="LOW",
+    )
+    assert missing_priority_target["success"] is False
+    assert "not found" in missing_priority_target["error"].lower()
+
+    empty_message = service.message_requester(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        message="   ",
+    )
+    assert empty_message["success"] is False
+    assert "cannot be empty" in empty_message["error"].lower()
+
+    missing_message_target = service.message_requester(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=9999,
+        message="hello",
+    )
+    assert missing_message_target["success"] is False
+    assert "not found" in missing_message_target["error"].lower()
+
+    closed = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        new_status="IN_REVIEW",
+    )
+    assert closed["success"] is True
+
+    resolved = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        new_status="RESOLVED",
+    )
+    assert resolved["success"] is True
+
+    reply_closed = service.reply_as_requester(
+        viewer_email="alex.kim@acme.com",
+        actor_employee_id=201,
+        escalation_id=escalation_id,
+        message="Can I add more?",
+    )
+    assert reply_closed["success"] is False
+    assert "resolved escalation" in reply_closed["error"].lower()
+
+    reply_empty = service.reply_as_requester(
+        viewer_email="alex.kim@acme.com",
+        actor_employee_id=201,
+        escalation_id=9999,
+        message="   ",
+    )
+    assert reply_empty["success"] is False
+    assert "not found" in reply_empty["error"].lower()
+
+    invalid_status = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=escalation_id,
+        new_status="DONE",
+    )
+    assert invalid_status["success"] is False
+    assert "invalid status" in invalid_status["error"].lower()
+
+    missing_transition_target = service.transition_status(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=9999,
+        new_status="IN_REVIEW",
+    )
+    assert missing_transition_target["success"] is False
+    assert "not found" in missing_transition_target["error"].lower()
+
+    escalate_missing = service.escalate_request(
+        viewer_email="amanda.foster@acme.com",
+        actor_employee_id=103,
+        escalation_id=9999,
+    )
+    assert escalate_missing["success"] is False
+    assert "not found" in escalate_missing["error"].lower()
+
 
 def test_escalation_service_top_categories_for_month(tmp_path: Path):
     repo = _TestEscalationRepository(_build_engine(tmp_path))
