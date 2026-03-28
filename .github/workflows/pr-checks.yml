@@ -31,9 +31,9 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          uv sync
+          uv sync --no-install-project
 
       - name: Run tests
         shell: pwsh
         run: |
-          uv run pytest -vv -s --tb=long
+          .venv\Scripts\python -m pytest -vv -s --tb=long
