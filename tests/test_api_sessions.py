@@ -2,11 +2,15 @@ from __future__ import annotations
 
 from datetime import datetime
 from uuid import UUID
+from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from apps.api import server
 from apps.api.server import app, get_current_user
+from hr_agent.configs.config import settings
+from hr_agent.utils import db as db_utils
 
 
 def _override_user():
@@ -31,7 +35,6 @@ def _override_other_user():
         "direct_reports": [],
         "is_manager": False,
     }
-
 
 def test_get_or_create_session_reuses_owned_session_and_replaces_foreign():
     server._sessions.clear()
@@ -76,6 +79,17 @@ def test_build_session_title_trims_whitespace_and_truncates_long_queries():
 
     assert title == "Please help me understand my payroll deduction d..."
     assert server.build_session_title({"turns": [{"query": "   "}]}) is None
+
+
+@pytest.fixture(autouse=True)
+def _use_local_sqlite_for_api_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    db_path = tmp_path / "api_sessions.db"
+    monkeypatch.setattr(settings, "turso_database_url", "")
+    monkeypatch.setattr(settings, "turso_auth_token", "")
+    monkeypatch.setattr(settings, "db_url", f"sqlite:///{db_path}")
+    db_utils._engine = None
+    yield
+    db_utils._engine = None
 
 
 def test_session_turns_history_endpoint(monkeypatch):

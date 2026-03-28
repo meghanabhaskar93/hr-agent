@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
+import { getErrorMessage } from "@/lib/error";
 import { toast } from "sonner";
 
 export default function Auth() {
@@ -32,8 +33,8 @@ export default function Auth() {
     try {
       await signIn(email.trim());
       toast.success("Signed in.");
-    } catch (err: any) {
-      toast.error(err.message || "Sign-in failed");
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Sign-in failed"));
     } finally {
       setSubmitting(false);
     }
