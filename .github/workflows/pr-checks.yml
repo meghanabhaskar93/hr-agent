@@ -36,4 +36,4 @@ jobs:
       - name: Run tests
         shell: bash
         run: |
-          .venv/bin/python -m pytest -vv -s --tb=long
+          .venv/bin/python -m pytest tests -vv -s --tb=long
