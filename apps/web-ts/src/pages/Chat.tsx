@@ -18,9 +18,10 @@ import {
   fetchSessions,
   replyToHRRequestAsRequester,
   sendChat,
-  type BackendHRRequest,
   type BackendSessionTurn,
 } from "@/lib/backend";
+import { getErrorMessage } from "@/lib/error";
+import { mapHRRequestToPanel } from "@/lib/hrRequestPanel";
 
 interface Message {
   id: string;
@@ -192,61 +193,6 @@ function detectCategory(text: string): string {
   return "General";
 }
 
-function toRequestStatus(
-  status: BackendHRRequest["status"],
-  assigneeUserId?: string | null
-): "pending" | "assigned" | "in_progress" | "in_review" | "resolved" {
-  if (status === "RESOLVED" || status === "CANCELLED") return "resolved";
-  if (status === "NEEDS_INFO") return "in_review";
-  if (status === "IN_PROGRESS" || status === "ESCALATED") return "in_progress";
-  if (assigneeUserId) return "assigned";
-  return "pending";
-}
-
-function mapHRRequestToPanelRequest(item: BackendHRRequest): EscalatedRequest {
-  const createdAt = new Date(item.created_at);
-  const updatedAt = new Date(item.updated_at);
-  const lastMessageAt = item.last_message_at ? new Date(item.last_message_at) : null;
-  const hasHrMessage =
-    typeof item.last_message_to_requester === "string" &&
-    item.last_message_to_requester.trim().length > 0;
-  const latestUpdate =
-    item.last_message_to_requester ||
-    item.resolution_text ||
-    (typeof item.captured_fields?.agent_suggestion === "string"
-      ? item.captured_fields.agent_suggestion
-      : null) ||
-    "Your request has been logged for HR follow-up.";
-  const mappedPriority = item.priority === "P0" ? "critical" : item.priority === "P1" ? "high" : "medium";
-
-  const auditLog: { label: string; timestamp: Date }[] = [
-    { label: "Request created", timestamp: createdAt },
-  ];
-  if (hasHrMessage && lastMessageAt && !Number.isNaN(lastMessageAt.getTime())) {
-    auditLog.push({
-      label: "HR sent a clarifying question",
-      timestamp: lastMessageAt,
-    });
-  }
-  auditLog.push({
-    label: item.status === "RESOLVED" ? "Marked resolved by HR" : "Latest status update",
-    timestamp: updatedAt,
-  });
-
-  return {
-    id: String(item.request_id),
-    summary: item.summary.length > 60 ? `${item.summary.slice(0, 60)}...` : item.summary,
-    fullSummary: item.description,
-    aiResponse: latestUpdate,
-    status: toRequestStatus(item.status, item.assignee_user_id),
-    priority: mappedPriority,
-    category: `${item.type} / ${item.subtype}`,
-    timestamp: createdAt,
-    lastUpdatedAt: updatedAt,
-    auditLog,
-  };
-}
-
 function requestUpdateTimestampMs(request: EscalatedRequest): number {
   const timestamp = (request.lastUpdatedAt || request.timestamp).getTime();
   return Number.isFinite(timestamp) ? timestamp : 0;
@@ -279,7 +225,12 @@ export default function ChatPage() {
     const requests = await fetchHRRequests(user.email);
     setEscalatedRequests(
       requests
-        .map(mapHRRequestToPanelRequest)
+        .map((request) =>
+          mapHRRequestToPanel(request, {
+            latestUpdateFallback: "Your request has been logged for HR follow-up.",
+            hrMessageLabel: "HR sent a clarifying question",
+          })
+        )
         .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
     );
   }, [user?.email]);
@@ -434,8 +385,8 @@ export default function ChatPage() {
           return next;
         });
         setActiveConversation(convId);
-      } catch (error: any) {
-        toast.error(error?.message || "Failed to create session");
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, "Failed to create session"));
         return;
       }
     }
@@ -479,8 +430,8 @@ export default function ChatPage() {
         ...prev,
         [convId!]: [...(prev[convId!] || []), assistantMessage],
       }));
-    } catch (error: any) {
-      const errMessage = error?.message || "Failed to fetch response";
+    } catch (error: unknown) {
+      const errMessage = getErrorMessage(error, "Failed to fetch response");
       toast.error(errMessage);
       setMessages((prev) => [
         ...prev,
@@ -524,8 +475,8 @@ export default function ChatPage() {
         if (activeConversationRef.current === id) {
           setMessages(loaded);
         }
-      } catch (error: any) {
-        toast.error(error?.message || "Failed to load conversation history");
+      } catch (error: unknown) {
+        toast.error(getErrorMessage(error, "Failed to load conversation history"));
       }
     })();
   };
@@ -569,8 +520,8 @@ export default function ChatPage() {
 
     try {
       await deleteSession(user.email, id);
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to delete conversation");
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Failed to delete conversation"));
       return;
     }
 
@@ -643,8 +594,8 @@ export default function ChatPage() {
     );
   };
 
-  const handleEscalate = async (msg: Message) => {
-    if (!user?.email) return;
+  const handleEscalate = async (msg: Message): Promise<boolean> => {
+    if (!user?.email) return false;
     const msgIdx = messages.findIndex((item) => item.id === msg.id);
     const userMsg = [...messages]
       .slice(0, msgIdx >= 0 ? msgIdx : messages.length)
@@ -687,8 +638,10 @@ export default function ChatPage() {
 
       await loadEscalatedRequests();
       toast.success(`Escalated to HR Ops (#${result.request_id ?? "new"})`);
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to escalate");
+      return true;
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Failed to escalate"));
+      return false;
     }
   };
 
@@ -704,8 +657,8 @@ export default function ChatPage() {
       await replyToHRRequestAsRequester(user.email, parsedRequestId, message);
       await loadEscalatedRequests();
       toast.success("Reply sent to HR");
-    } catch (error: any) {
-      toast.error(error?.message || "Failed to send reply");
+    } catch (error: unknown) {
+      toast.error(getErrorMessage(error, "Failed to send reply"));
       throw error;
     }
   };

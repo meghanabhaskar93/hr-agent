@@ -178,7 +178,9 @@ def retry_with_backoff(config: RetryConfig | None = None):
 
                     time.sleep(delay)
 
-            raise last_exception
+            if last_exception is not None:
+                raise last_exception
+            raise RuntimeError("Retry operation failed without a captured exception.")
 
         return wrapper
 

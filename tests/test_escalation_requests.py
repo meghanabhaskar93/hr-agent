@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
 
 from sqlalchemy import create_engine, text
 
@@ -283,7 +284,6 @@ def test_escalation_service_permissions_actions_and_transitions(tmp_path: Path):
     assert len(employee_view) == 1
     assert employee_view[0]["requester_email"] == "alex.kim@acme.com"
 
-
 def test_escalation_service_edge_cases_and_helper_paths(tmp_path: Path):
     repo = _TestEscalationRepository(_build_engine(tmp_path))
     service = EscalationService()
@@ -457,3 +457,92 @@ def test_escalation_service_edge_cases_and_helper_paths(tmp_path: Path):
     )
     assert escalate_missing["success"] is False
     assert "not found" in escalate_missing["error"].lower()
+
+
+def test_escalation_service_top_categories_for_month(tmp_path: Path):
+    repo = _TestEscalationRepository(_build_engine(tmp_path))
+    service = EscalationService()
+    service.repo = repo
+    service.employee_repo = _FakeEmployeeRepo({"amanda.foster@acme.com": "HR"})
+
+    payroll_pending_id = repo.create(
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
+        thread_id="thread-a",
+        source_message_excerpt="Payroll discrepancy needs review.",
+        category="Payroll",
+    )
+    payroll_review_id = repo.create(
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
+        thread_id="thread-b",
+        source_message_excerpt="Another payroll issue.",
+        category="Payroll",
+    )
+    benefits_pending_id = repo.create(
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
+        thread_id="thread-c",
+        source_message_excerpt="Benefits question.",
+        category="Benefits",
+    )
+    uncategorized_pending_id = repo.create(
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
+        thread_id="thread-d",
+        source_message_excerpt="No category provided.",
+        category=None,
+    )
+    policy_resolved_id = repo.create(
+        requester_employee_id=201,
+        requester_email="alex.kim@acme.com",
+        thread_id="thread-e",
+        source_message_excerpt="Policy follow-up.",
+        category="Policy",
+    )
+
+    assert repo.transition_status(payroll_review_id, "IN_REVIEW", updated_by_employee_id=103)
+    assert repo.transition_status(policy_resolved_id, "RESOLVED", updated_by_employee_id=103)
+    # Keep explicit references so test intent is obvious.
+    assert payroll_pending_id > 0
+    assert benefits_pending_id > 0
+    assert uncategorized_pending_id > 0
+
+    month = datetime.now().strftime("%Y-%m")
+    result = service.get_top_categories(month=month, limit=3)
+
+    assert result["month"] == month
+    assert result["total_escalations"] == 5
+    assert result["status_breakdown"] == {"pending": 3, "in_review": 1, "resolved": 1}
+    assert result["open_escalations"] == 4
+    assert result["resolution_rate_percent"] == 20.0
+    assert result["top_categories_limit"] == 3
+    assert result["other_categories_count"] == 1
+    assert result["categories"][0]["category"] == "Payroll"
+    assert result["categories"][0]["count"] == 2
+    assert result["categories"][0]["percentage"] == 40.0
+    assert result["categories"][0]["status_breakdown"] == {
+        "pending": 1,
+        "in_review": 1,
+        "resolved": 0,
+    }
+    assert result["categories"][0]["open_count"] == 2
+    assert result["categories"][0]["resolved_count"] == 0
+    assert result["categories"][1]["category"] == "Benefits"
+    assert result["categories"][1]["count"] == 1
+    assert result["categories"][1]["percentage"] == 20.0
+    assert result["categories"][1]["status_breakdown"] == {
+        "pending": 1,
+        "in_review": 0,
+        "resolved": 0,
+    }
+    assert result["categories"][2]["category"] == "Policy"
+    assert result["categories"][2]["count"] == 1
+    assert result["categories"][2]["percentage"] == 20.0
+    assert result["categories"][2]["status_breakdown"] == {
+        "pending": 0,
+        "in_review": 0,
+        "resolved": 1,
+    }
+    assert result["categories"][2]["open_count"] == 0
+    assert result["categories"][2]["resolved_count"] == 1
