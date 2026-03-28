@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          uv sync --no-install-project
+          uv sync --frozen --no-install-project
 
       - name: Run tests
         shell: pwsh
