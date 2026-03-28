@@ -1,15 +1,60 @@
 from __future__ import annotations
 
+import importlib.util
 import json
+import sys
+import types
 from pathlib import Path
 
 import pytest
 
-from evals.analysis import compare_runs, generate_report, load_results, plot_results
-from evals.datasets import EvalCase, EvalDataset
-from evals.logger import LogLevel
-from evals.metrics import EvalCategory, EvalDifficulty, EvalMetrics, EvalResult
-from evals.runner import EvalRunner, run_evals
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_module(module_name: str, relative_path: str):
+    module_path = ROOT / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _bootstrap_evals_package():
+    package = types.ModuleType("evals")
+    package.__path__ = [str(ROOT / "evals")]
+
+    fake_config = types.ModuleType("hr_agent.configs.config")
+    fake_config.get_langfuse_client = lambda: None
+
+    sys.modules["evals"] = package
+    sys.modules["hr_agent.configs.config"] = fake_config
+    metrics = _load_module("evals.metrics", "evals/metrics.py")
+    datasets = _load_module("evals.datasets", "evals/datasets.py")
+    logger = _load_module("evals.logger", "evals/logger.py")
+    analysis = _load_module("evals.analysis", "evals/analysis.py")
+    runner = _load_module("evals.runner", "evals/runner.py")
+
+    return analysis, datasets, logger, metrics, runner
+
+
+analysis_mod, datasets_mod, logger_mod, metrics_mod, runner_mod = _bootstrap_evals_package()
+
+compare_runs = analysis_mod.compare_runs
+generate_report = analysis_mod.generate_report
+load_results = analysis_mod.load_results
+plot_results = analysis_mod.plot_results
+EvalCase = datasets_mod.EvalCase
+EvalDataset = datasets_mod.EvalDataset
+LogLevel = logger_mod.LogLevel
+EvalCategory = metrics_mod.EvalCategory
+EvalDifficulty = metrics_mod.EvalDifficulty
+EvalMetrics = metrics_mod.EvalMetrics
+EvalResult = metrics_mod.EvalResult
+EvalRunner = runner_mod.EvalRunner
+run_evals = runner_mod.run_evals
 
 
 def _case(case_id: str, *, denied: bool = False) -> EvalCase:

@@ -8,11 +8,42 @@ from pathlib import Path
 
 import pytest
 
-from evals.datasets import EvalCase, EvalDataset
-from evals.metrics import EvalCategory, EvalDifficulty
-
-
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_module(module_name: str, relative_path: str):
+    module_path = ROOT / relative_path
+    spec = importlib.util.spec_from_file_location(module_name, module_path)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _bootstrap_evals_modules():
+    package = types.ModuleType("evals")
+    package.__path__ = [str(ROOT / "evals")]
+    previous_package = sys.modules.get("evals")
+    sys.modules["evals"] = package
+
+    metrics = _load_module("evals.metrics", "evals/metrics.py")
+    datasets = _load_module("evals.datasets", "evals/datasets.py")
+
+    if previous_package is None:
+        sys.modules.pop("evals", None)
+    else:
+        sys.modules["evals"] = previous_package
+
+    return datasets, metrics
+
+
+datasets_mod, metrics_mod = _bootstrap_evals_modules()
+EvalCase = datasets_mod.EvalCase
+EvalDataset = datasets_mod.EvalDataset
+EvalCategory = metrics_mod.EvalCategory
+EvalDifficulty = metrics_mod.EvalDifficulty
 
 
 def _load_deepeval_runner_module():
@@ -56,14 +87,32 @@ def _load_deepeval_runner_module():
 
     fake_test_case.LLMTestCase = FakeLLMTestCase
 
+    fake_config = types.ModuleType("hr_agent.configs.config")
+    fake_config.get_langfuse_client = lambda: None
+    fake_evals = types.ModuleType("evals")
+    fake_evals.__path__ = [str(ROOT / "evals")]
+
     previous = {
         name: sys.modules.get(name)
-        for name in ["deepeval", "deepeval.metrics", "deepeval.models", "deepeval.test_case"]
+        for name in [
+            "deepeval",
+            "deepeval.metrics",
+            "deepeval.models",
+            "deepeval.test_case",
+            "evals",
+            "evals.datasets",
+            "evals.metrics",
+            "hr_agent.configs.config",
+        ]
     }
     sys.modules["deepeval"] = fake_deepeval
     sys.modules["deepeval.metrics"] = fake_metrics
     sys.modules["deepeval.models"] = fake_models
     sys.modules["deepeval.test_case"] = fake_test_case
+    sys.modules["evals"] = fake_evals
+    sys.modules["evals.datasets"] = datasets_mod
+    sys.modules["evals.metrics"] = metrics_mod
+    sys.modules["hr_agent.configs.config"] = fake_config
 
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
