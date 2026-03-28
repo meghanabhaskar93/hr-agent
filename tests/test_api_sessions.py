@@ -35,7 +35,6 @@ def _override_other_user():
         "direct_reports": [],
         "is_manager": False,
     }
-
 def test_get_or_create_session_reuses_owned_session_and_replaces_foreign():
     server._sessions.clear()
     server._sessions["session-1"] = {
@@ -80,7 +79,6 @@ def test_build_session_title_trims_whitespace_and_truncates_long_queries():
     assert title == "Please help me understand my payroll deduction d..."
     assert server.build_session_title({"turns": [{"query": "   "}]}) is None
 
-
 @pytest.fixture(autouse=True)
 def _use_local_sqlite_for_api_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     db_path = tmp_path / "api_sessions.db"
@@ -90,8 +88,6 @@ def _use_local_sqlite_for_api_tests(tmp_path: Path, monkeypatch: pytest.MonkeyPa
     db_utils._engine = None
     yield
     db_utils._engine = None
-
-
 def test_session_turns_history_endpoint(monkeypatch):
     app.dependency_overrides[get_current_user] = _override_user
     monkeypatch.setattr(server, "seed_if_needed", lambda: None)
