@@ -46,31 +46,6 @@ def _bootstrap_evals_package():
     return analysis, datasets, logger, metrics, runner
 
 
-def _load_runner_module_expect_import_error():
-    package = types.ModuleType("evals")
-    package.__path__ = [str(ROOT / "evals")]
-    sys.modules["evals"] = package
-    metrics = _load_module("evals.metrics", "evals/metrics.py")
-    datasets = _load_module("evals.datasets", "evals/datasets.py")
-    logger = _load_module("evals.logger", "evals/logger.py")
-    package.metrics = metrics
-    package.datasets = datasets
-    package.logger = logger
-
-    fake_agent_module = types.ModuleType("hr_agent.agent.langgraph_agent")
-    fake_agent_module.HRAgentLangGraph = object
-    sys.modules["hr_agent.agent.langgraph_agent"] = fake_agent_module
-
-    module_path = ROOT / "evals" / "runner.py"
-    spec = importlib.util.spec_from_file_location("evals.runner_import_check", module_path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-
-    with pytest.raises(ImportError, match="get_langfuse_client"):
-        spec.loader.exec_module(module)
-
-
 analysis_mod, datasets_mod, logger_mod, metrics_mod, runner_mod = _bootstrap_evals_package()
 
 compare_runs = analysis_mod.compare_runs
@@ -88,8 +63,12 @@ EvalRunner = runner_mod.EvalRunner
 run_evals = runner_mod.run_evals
 
 
-def test_runner_import_surfaces_missing_langfuse_client_symbol():
-    _load_runner_module_expect_import_error()
+def test_runner_imports_get_langfuse_client_from_config():
+    # Verifies that evals.runner re-exports get_langfuse_client at module scope,
+    # which is required so tests (and production callers) can monkeypatch it.
+    assert hasattr(runner_mod, "get_langfuse_client"), (
+        "evals.runner must import get_langfuse_client at module scope"
+    )
 
 
 def _case(case_id: str, *, denied: bool = False) -> EvalCase:
