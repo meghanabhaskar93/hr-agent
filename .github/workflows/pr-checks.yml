@@ -11,8 +11,8 @@ concurrency:
 
 jobs:
   checks:
-    name: uv sync + tests (Linux)
-    runs-on: ubuntu-latest
+    name: uv sync + tests (Windows)
+    runs-on: windows-latest
 
     steps:
       - name: Checkout
@@ -29,11 +29,11 @@ jobs:
           enable-cache: true
 
       - name: Install dependencies
-        shell: bash
+        shell: pwsh
         run: |
           uv sync --frozen --no-install-project
 
       - name: Run tests
-        shell: bash
+        shell: pwsh
         run: |
-          .venv/bin/python -m pytest tests -vv -s --tb=long
+          .venv\Scripts\python -m pytest -vv -s --tb=long
